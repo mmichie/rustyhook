@@ -3,10 +3,11 @@ use rusoto_core::{Region, HttpClient, credential::EnvironmentProvider};
 use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest};
 use std::env;
 use tokio;
+use std::process::Command as ProcessCommand;
 
 #[tokio::main]
 async fn main() {
-    let _matches = Command::new("RustyHook")
+    let matches = Command::new("RustyHook")
         .version("0.0.1")
         .author("Matt Michie")
         .about("Automates Git updates and Docker-compose restarts based on SQS messages")
@@ -21,11 +22,16 @@ async fn main() {
              .help("Enables Docker-compose restart"))
         .get_matches();
 
-    // Placeholder for getting the directory value
-    // Placeholder for checking if Docker-compose restart is enabled
-    // Replace with the correct methods according to clap 4.x
+    let default_directory = env::current_dir().unwrap().to_str().unwrap().to_string();
+    let directory = matches.get_one::<String>("directory").unwrap_or(&default_directory);
+    let docker_restart = matches.contains_id("docker-restart");
 
-    // Rest of your main function...
+    poll_sqs_messages().await;
+    perform_git_update(directory);
+
+    if docker_restart {
+        optional_docker_compose_restart(directory);
+    }
 }
 
 async fn poll_sqs_messages() {
@@ -63,15 +69,30 @@ async fn poll_sqs_messages() {
     }
 }
 
-// Function stub for performing Git update
 fn perform_git_update(directory: &str) {
-    // TODO: Implement the function
-    println!("Performing Git update in directory: {}", directory);
+    // Change to the specified directory
+    std::env::set_current_dir(directory).expect("Failed to change directory");
+
+    // Execute git pull using std::process::Command
+    let output = std::process::Command::new("git")
+                         .args(["pull", "origin", "master"])
+                         .output()
+                         .expect("Failed to execute git pull");
+
+    if output.status.success() {
+        println!("Repository updated successfully.");
+    } else {
+        eprintln!("Failed to update repository: {}", String::from_utf8_lossy(&output.stderr));
+    }
 }
 
-// Function stub for optional Docker-compose restart
+
 fn optional_docker_compose_restart(directory: &str) {
-    // TODO: Implement the function
-    println!("Optionally restarting Docker-compose in directory: {}", directory);
+    if let Err(e) = ProcessCommand::new("docker-compose")
+        .args(&["-f", format!("{}/docker-compose.yml", directory).as_str(), "restart"])
+        .status() {
+            eprintln!("Failed to restart Docker-compose: {}", e);
+    } else {
+        println!("Docker-compose restarted in directory: {}", directory);
+    }
 }
-
