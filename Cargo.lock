@@ -1221,8 +1221,10 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "git2",
+ "rusoto_core",
  "rusoto_sqs",
  "shiplift",
+ "tokio",
 ]
 
 [[package]]

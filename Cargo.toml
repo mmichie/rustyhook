@@ -8,5 +8,7 @@ edition = "2021"
 [dependencies]
 clap = "4.4.13"
 git2 = "0.18.1"
+rusoto_core = "0.48.0"
 rusoto_sqs = "0.48.0"
 shiplift = "0.7.0"
+tokio = "1.35.1"
