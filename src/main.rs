@@ -1,7 +1,7 @@
 use clap::{Arg, Command};
 
 fn main() {
-    let matches = Command::new("RustyHook")
+    let _matches = Command::new("RustyHook")
         .version("0.0.1")
         .author("Matt Michie")
         .about("Automates Git updates and Docker-compose restarts based on SQS messages")
