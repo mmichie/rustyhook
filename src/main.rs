@@ -1,6 +1,6 @@
 use clap::{Arg, Command};
 use rusoto_core::{Region, HttpClient, credential::EnvironmentProvider};
-use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest};
+use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest, DeleteMessageRequest};
 use std::env;
 use tokio;
 use std::process::Command as ProcessCommand;
@@ -36,9 +36,7 @@ async fn main() {
 
 async fn poll_sqs_messages() {
     // Retrieve AWS credentials and region from environment variables
-    let aws_access_key = env::var("AWS_ACCESS_KEY_ID").expect("AWS_ACCESS_KEY_ID not set");
-    let aws_secret_key = env::var("AWS_SECRET_ACCESS_KEY").expect("AWS_SECRET_ACCESS_KEY not set");
-    let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set").parse().expect("Invalid AWS region");
+    let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set").parse::<Region>().expect("Invalid AWS region");
     let queue_url = env::var("SQS_QUEUE_URL").expect("SQS_QUEUE_URL not set");
 
     // Create a custom credential provider
@@ -48,7 +46,8 @@ async fn poll_sqs_messages() {
     let client = SqsClient::new_with(HttpClient::new().expect("Failed to create HTTP client"), credentials_provider, aws_region);
 
     let request = ReceiveMessageRequest {
-        queue_url,
+        queue_url: queue_url.clone(),
+        wait_time_seconds: Some(20), // Enable long polling for 20 seconds
         ..Default::default()
     };
 
@@ -59,7 +58,21 @@ async fn poll_sqs_messages() {
                 for message in messages {
                     // Process each message
                     println!("Received message: {:?}", message);
+
                     // TODO: Add more processing logic here
+
+                    // Delete the message from the queue to prevent reprocessing
+                    if let Some(receipt_handle) = &message.receipt_handle {
+                        let delete_request = DeleteMessageRequest {
+                            queue_url: queue_url.clone(),
+                            receipt_handle: receipt_handle.to_string(),
+                        };
+
+                        match client.delete_message(delete_request).await {
+                            Ok(_) => println!("Message deleted successfully."),
+                            Err(e) => eprintln!("Error deleting message: {}", e),
+                        }
+                    }
                 }
             }
         }
