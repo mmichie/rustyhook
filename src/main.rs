@@ -2,8 +2,8 @@ use clap::{Arg, Command};
 
 fn main() {
     let matches = Command::new("RustyHook")
-        .version("0.1.0")
-        .author("Your Name. <your_email@example.com>")
+        .version("0.0.1")
+        .author("Matt Michie")
         .about("Automates Git updates and Docker-compose restarts based on SQS messages")
         .arg(Arg::new("directory")
              .short('d')
