@@ -131,6 +131,7 @@ async fn poll_sqs_messages() -> bool {
     let request = ReceiveMessageRequest {
         queue_url: queue_url.clone(),
         wait_time_seconds: Some(20), // Enable long polling for 20 seconds
+        max_number_of_messages: Some(10),
         ..Default::default()
     };
 
