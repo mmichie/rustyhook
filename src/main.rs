@@ -34,6 +34,11 @@ async fn main() {
     let docker_restart = matches.contains_id("docker-restart");
     let poll_interval = matches.get_one::<u64>("poll-interval").copied().unwrap_or(30);
 
+    if let Err(e) = validate_env_vars() {
+        eprintln!("Error: {}", e);
+        return;
+    }
+
     loop {
         poll_sqs_messages().await;
         perform_git_update(directory);
@@ -42,6 +47,17 @@ async fn main() {
         }
         sleep(Duration::from_secs(poll_interval)).await;
     }
+}
+
+fn validate_env_vars() -> Result<(), String> {
+    let required_vars = ["AWS_REGION", "SQS_QUEUE_URL"];
+    for &var in required_vars.iter() {
+        if env::var(var).is_err() {
+            return Err(format!("Environment variable {} not set", var));
+        }
+    }
+    // Add more validation logic here if necessary
+    Ok(())
 }
 
 
