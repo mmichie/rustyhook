@@ -3,12 +3,16 @@ use rusoto_core::{Region, HttpClient, credential::EnvironmentProvider};
 use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest, DeleteMessageRequest};
 use std::env;
 use tokio;
+use env_logger;
+use log::{info, error};
 use std::process::Command as ProcessCommand;
 use std::time::Duration;
 use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     let matches = Command::new("RustyHook")
         .version("0.0.1")
         .author("Matt Michie")
@@ -35,7 +39,7 @@ async fn main() {
     let poll_interval = matches.get_one::<u64>("poll-interval").copied().unwrap_or(30);
 
     if let Err(e) = validate_env_vars() {
-        eprintln!("Error: {}", e);
+        error!("Error: {}", e);
         return;
     }
 
@@ -84,7 +88,7 @@ async fn poll_sqs_messages() {
             if let Some(messages) = response.messages {
                 for message in messages {
                     // Process each message
-                    println!("Received message: {:?}", message);
+                    info!("Received message: {:?}", message);
 
                     // TODO: Add more processing logic here
 
@@ -96,15 +100,15 @@ async fn poll_sqs_messages() {
                         };
 
                         match client.delete_message(delete_request).await {
-                            Ok(_) => println!("Message deleted successfully."),
-                            Err(e) => eprintln!("Error deleting message: {}", e),
+                            Ok(_) => info!("Message deleted successfully."),
+                            Err(e) => error!("Error deleting message: {}", e),
                         }
                     }
                 }
             }
         }
         Err(error) => {
-            eprintln!("Error receiving messages: {}", error);
+            error!("Error receiving messages: {}", error);
         }
     }
 }
@@ -120,9 +124,9 @@ fn perform_git_update(directory: &str) {
                          .expect("Failed to execute git pull");
 
     if output.status.success() {
-        println!("Repository updated successfully.");
+        info!("Repository updated successfully.");
     } else {
-        eprintln!("Failed to update repository: {}", String::from_utf8_lossy(&output.stderr));
+        error!("Failed to update repository: {}", String::from_utf8_lossy(&output.stderr));
     }
 }
 
@@ -130,8 +134,8 @@ fn optional_docker_compose_restart(directory: &str) {
     if let Err(e) = ProcessCommand::new("docker-compose")
         .args(&["-f", format!("{}/docker-compose.yml", directory).as_str(), "restart"])
         .status() {
-            eprintln!("Failed to restart Docker-compose: {}", e);
+            error!("Failed to restart Docker-compose: {}", e);
     } else {
-        println!("Docker-compose restarted in directory: {}", directory);
+        info!("Docker-compose restarted in directory: {}", directory);
     }
 }
