@@ -59,10 +59,12 @@ async fn main() {
     }
 
     loop {
-        poll_sqs_messages().await;
-        perform_git_update(directory);
-        if docker_restart {
-            optional_docker_compose_restart(directory);
+        let messages_received = poll_sqs_messages().await;
+        if messages_received {
+            perform_git_update(directory);
+            if docker_restart {
+                optional_docker_compose_restart(directory);
+            }
         }
         sleep(Duration::from_secs(poll_interval)).await;
     }
@@ -105,11 +107,10 @@ fn validate_env_vars() -> Result<(), String> {
 }
 
 
-async fn poll_sqs_messages() {
+async fn poll_sqs_messages() -> bool {
     // Retrieve AWS credentials and region from environment variables
     let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set").parse::<Region>().expect("Invalid AWS region");
     let queue_url = env::var("SQS_QUEUE_URL").expect("SQS_QUEUE_URL not set");
-    info!("Polling SQS messages from URL: {}", queue_url);
 
     // Create a custom credential provider
     let credentials_provider = EnvironmentProvider::default();
@@ -127,29 +128,40 @@ async fn poll_sqs_messages() {
     match client.receive_message(request).await {
         Ok(response) => {
             if let Some(messages) = response.messages {
-                for message in messages {
-                    // Process each message
-                    info!("Received message: {:?}", message);
+                if messages.is_empty() {
+                    info!("No messages received in this poll.");
+                    false
+                } else {
+                    info!("Received {} message(s).", messages.len());
+                    for message in messages {
+                        // Process each message
+                        info!("Received message: {:?}", message);
 
-                    // TODO: Add more processing logic here
+                        // TODO: Add more processing logic here
 
-                    // Delete the message from the queue to prevent reprocessing
-                    if let Some(receipt_handle) = &message.receipt_handle {
-                        let delete_request = DeleteMessageRequest {
-                            queue_url: queue_url.clone(),
-                            receipt_handle: receipt_handle.to_string(),
-                        };
+                        // Delete the message from the queue to prevent reprocessing
+                        if let Some(receipt_handle) = &message.receipt_handle {
+                            let delete_request = DeleteMessageRequest {
+                                queue_url: queue_url.clone(),
+                                receipt_handle: receipt_handle.to_string(),
+                            };
 
-                        match client.delete_message(delete_request).await {
-                            Ok(_) => info!("Message deleted successfully."),
-                            Err(e) => error!("Error deleting message: {}", e),
+                            match client.delete_message(delete_request).await {
+                                Ok(_) => info!("Message deleted successfully."),
+                                Err(e) => error!("Error deleting message: {}", e),
+                            }
                         }
                     }
+                    true
                 }
+            } else {
+                info!("No messages received in this poll.");
+                false
             }
         }
         Err(error) => {
             error!("Error receiving messages: {}", error);
+            false
         }
     }
 }
