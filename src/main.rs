@@ -3,6 +3,7 @@ use rusoto_core::{Region, HttpClient, credential::EnvironmentProvider};
 use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest, DeleteMessageRequest};
 use std::env;
 use tokio;
+use dotenv::dotenv;
 use env_logger;
 use log::{info, error};
 use std::process::Command as ProcessCommand;
@@ -11,6 +12,7 @@ use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();  // This will load the .env file if it exists
     env_logger::init();
 
     let matches = Command::new("RustyHook")
