@@ -1,6 +1,6 @@
-use clap::{Arg, Command};
+use clap::{Arg, Command, ArgAction};
 use rusoto_core::{Region, HttpClient, credential::EnvironmentProvider};
-use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest, DeleteMessageRequest};
+use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest, DeleteMessageRequest, ListQueuesRequest};
 use std::env;
 use tokio;
 use dotenv::dotenv;
@@ -27,18 +27,29 @@ async fn main() {
         .arg(Arg::new("docker-restart")
              .short('r')
              .long("docker-restart")
+             .action(ArgAction::SetTrue)
              .help("Enables Docker-compose restart"))
         .arg(Arg::new("poll-interval")
              .short('p')
              .long("poll-interval")
              .value_name("SECONDS")
              .help("Sets the poll interval in seconds"))
+        .arg(Arg::new("list-queues")
+             .short('l')
+             .long("list-queues")
+             .action(ArgAction::SetTrue)
+             .help("Lists all SQS queues"))
         .get_matches();
 
     let default_directory = env::current_dir().unwrap().to_str().unwrap().to_string();
     let directory = matches.get_one::<String>("directory").unwrap_or(&default_directory);
     let docker_restart = matches.contains_id("docker-restart");
     let poll_interval = matches.get_one::<u64>("poll-interval").copied().unwrap_or(30);
+
+    if matches.get_flag("list-queues") {
+        list_all_queues().await;
+        return; // Exit after listing queues
+    }
 
     if let Err(e) = validate_env_vars() {
         error!("Error: {}", e);
@@ -52,6 +63,31 @@ async fn main() {
             optional_docker_compose_restart(directory);
         }
         sleep(Duration::from_secs(poll_interval)).await;
+    }
+}
+
+async fn list_all_queues() {
+    let region = env::var("AWS_REGION").expect("AWS_REGION not set")
+        .parse::<Region>().expect("Invalid AWS region");
+    let client = SqsClient::new(region);
+
+    let list_queues_request = ListQueuesRequest::default(); // Default request to list queues
+
+    match client.list_queues(list_queues_request).await {
+        Ok(response) => {
+            match response.queue_urls {
+                Some(queue_urls) => {
+                    info!("List of SQS Queues:");
+                    for url in queue_urls {
+                        info!("{}", url);
+                    }
+                },
+                None => info!("No SQS queues found."),
+            }
+        },
+        Err(error) => {
+            error!("Error listing queues: {}", error);
+        },
     }
 }
 
@@ -77,6 +113,8 @@ async fn poll_sqs_messages() {
 
     // Create a custom client configuration
     let client = SqsClient::new_with(HttpClient::new().expect("Failed to create HTTP client"), credentials_provider, aws_region);
+
+    info!("Polling SQS messages from URL: {}", queue_url);
 
     let request = ReceiveMessageRequest {
         queue_url: queue_url.clone(),
