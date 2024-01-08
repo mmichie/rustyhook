@@ -1,6 +1,6 @@
 use clap::{Arg, Command, ArgAction};
 use rusoto_core::{Region, HttpClient, credential::EnvironmentProvider};
-use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest, DeleteMessageRequest, ListQueuesRequest};
+use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest, DeleteMessageRequest, ListQueuesRequest, SendMessageRequest};
 use std::env;
 use tokio;
 use dotenv::dotenv;
@@ -41,6 +41,11 @@ async fn main() {
              .long("list-queues")
              .action(ArgAction::SetTrue)
              .help("Lists all SQS queues"))
+        .arg(Arg::new("send-test-message")
+             .short('t')
+             .long("send-test-message")
+             .action(ArgAction::SetTrue)
+             .help("Sends a test message to the SQS queue"))
         .get_matches();
 
     let default_directory = env::current_dir().unwrap().to_str().unwrap().to_string();
@@ -51,6 +56,11 @@ async fn main() {
     if matches.get_flag("list-queues") {
         list_all_queues().await;
         return; // Exit after listing queues
+    }
+
+    if matches.get_flag("send-test-message") {
+        send_test_message().await;
+        return; // Exit after sending test message
     }
 
     if let Err(e) = validate_env_vars() {
@@ -163,6 +173,24 @@ async fn poll_sqs_messages() -> bool {
             error!("Error receiving messages: {}", error);
             false
         }
+    }
+}
+
+async fn send_test_message() {
+    let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set")
+        .parse::<Region>().expect("Invalid AWS region");
+    let queue_url = env::var("SQS_QUEUE_URL").expect("SQS_QUEUE_URL not set");
+    let client = SqsClient::new(aws_region);
+
+    let send_message_request = SendMessageRequest {
+        queue_url: queue_url.clone(),
+        message_body: "Test message from RustyHook".to_string(),
+        ..Default::default()
+    };
+
+    match client.send_message(send_message_request).await {
+        Ok(_) => info!("Test message sent successfully."),
+        Err(e) => error!("Error sending test message: {}", e),
     }
 }
 
