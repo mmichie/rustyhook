@@ -14,6 +14,8 @@ use tokio::time::sleep;
 async fn main() {
     dotenv().ok();  // This will load the .env file if it exists
     env_logger::init();
+    info!("Loaded .env file.");
+    info!("SQS_QUEUE_URL from .env: {:?}", env::var("SQS_QUEUE_URL"));
 
     let matches = Command::new("RustyHook")
         .version("0.0.1")
@@ -43,7 +45,7 @@ async fn main() {
 
     let default_directory = env::current_dir().unwrap().to_str().unwrap().to_string();
     let directory = matches.get_one::<String>("directory").unwrap_or(&default_directory);
-    let docker_restart = matches.contains_id("docker-restart");
+    let docker_restart = matches.get_flag("docker-restart");
     let poll_interval = matches.get_one::<u64>("poll-interval").copied().unwrap_or(30);
 
     if matches.get_flag("list-queues") {
@@ -107,14 +109,13 @@ async fn poll_sqs_messages() {
     // Retrieve AWS credentials and region from environment variables
     let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set").parse::<Region>().expect("Invalid AWS region");
     let queue_url = env::var("SQS_QUEUE_URL").expect("SQS_QUEUE_URL not set");
+    info!("Polling SQS messages from URL: {}", queue_url);
 
     // Create a custom credential provider
     let credentials_provider = EnvironmentProvider::default();
 
     // Create a custom client configuration
     let client = SqsClient::new_with(HttpClient::new().expect("Failed to create HTTP client"), credentials_provider, aws_region);
-
-    info!("Polling SQS messages from URL: {}", queue_url);
 
     let request = ReceiveMessageRequest {
         queue_url: queue_url.clone(),
