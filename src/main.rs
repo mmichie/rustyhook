@@ -4,6 +4,8 @@ use rusoto_sqs::{Sqs, SqsClient, ReceiveMessageRequest, DeleteMessageRequest};
 use std::env;
 use tokio;
 use std::process::Command as ProcessCommand;
+use std::time::Duration;
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
@@ -20,19 +22,28 @@ async fn main() {
              .short('r')
              .long("docker-restart")
              .help("Enables Docker-compose restart"))
+        .arg(Arg::new("poll-interval")
+             .short('p')
+             .long("poll-interval")
+             .value_name("SECONDS")
+             .help("Sets the poll interval in seconds"))
         .get_matches();
 
     let default_directory = env::current_dir().unwrap().to_str().unwrap().to_string();
     let directory = matches.get_one::<String>("directory").unwrap_or(&default_directory);
     let docker_restart = matches.contains_id("docker-restart");
+    let poll_interval = matches.get_one::<u64>("poll-interval").copied().unwrap_or(30);
 
-    poll_sqs_messages().await;
-    perform_git_update(directory);
-
-    if docker_restart {
-        optional_docker_compose_restart(directory);
+    loop {
+        poll_sqs_messages().await;
+        perform_git_update(directory);
+        if docker_restart {
+            optional_docker_compose_restart(directory);
+        }
+        sleep(Duration::from_secs(poll_interval)).await;
     }
 }
+
 
 async fn poll_sqs_messages() {
     // Retrieve AWS credentials and region from environment variables
@@ -98,7 +109,6 @@ fn perform_git_update(directory: &str) {
         eprintln!("Failed to update repository: {}", String::from_utf8_lossy(&output.stderr));
     }
 }
-
 
 fn optional_docker_compose_restart(directory: &str) {
     if let Err(e) = ProcessCommand::new("docker-compose")
