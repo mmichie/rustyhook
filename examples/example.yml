@@ -1,0 +1,49 @@
+---
+- handler: SQS Message Handler
+  type: SQS
+  options:
+    queue_url: "https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue"
+    poll_interval: 30
+  action:
+    shell: "cd /path/to/git/repo && git pull origin master && docker-compose restart"
+
+- handler: Website Polling Handler
+  type: Web Polling
+  options:
+    url: "http://example.com"
+    poll_interval: 60
+  action:
+    shell: "curl -X POST http://example.com/webhook"
+
+- handler: Cron Job Handler
+  type: Cron
+  options:
+    schedule: "0 * * * *" # Every hour
+  action:
+    shell: "cd /path/to/backup/dir && backup_script.sh"
+
+- handler: Webhook Listener
+  type: Webhook
+  options:
+    port: 8080
+    path: "/webhook"
+  action:
+    shell: "echo 'Webhook received!'"
+
+- handler: File Watcher
+  type: Filesystem
+  options:
+    path: "/path/to/watch"
+    event: "modify"
+  action:
+    shell: "echo 'File modified!'"
+
+- handler: Database Polling
+  type: Database
+  options:
+    db_connection: "postgres://user:password@localhost/dbname"
+    query: "SELECT * FROM updates WHERE processed = false"
+    interval: 120
+  action:
+    shell: "echo 'New database entry found!'"
+
