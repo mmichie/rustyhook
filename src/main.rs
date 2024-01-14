@@ -1,8 +1,8 @@
 mod config;
 mod handlers;
 use clap::{Arg, Command};
-use config::{load_config, EventType};
 use config::SpecificOptions;
+use config::{load_config, EventType};
 use handlers::{sqs_handler, webhook_handler};
 use log::error;
 

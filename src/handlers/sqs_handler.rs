@@ -1,9 +1,9 @@
 // src/handlers/sqs_handler.rs
 
 use log::{error, info};
+use rusoto_core::credential::EnvironmentProvider;
 use rusoto_core::{HttpClient, Region};
 use rusoto_sqs::{DeleteMessageRequest, Message, ReceiveMessageRequest, Sqs, SqsClient};
-use rusoto_core::credential::EnvironmentProvider;
 use std::env;
 use tokio::time::{sleep, Duration};
 
