@@ -1,6 +1,6 @@
-// src/config.rs
-
 use serde::{Deserialize, Serialize};
+use std::fs;
+use log::{info, error};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -67,7 +67,21 @@ pub struct ActionConfig {
 }
 
 // Function to load and parse the YAML configuration file
-pub fn load_config(file_path: &str) -> Result<Config, serde_yaml::Error> {
-    let config_str = std::fs::read_to_string(file_path).expect("Failed to read config file");
-    serde_yaml::from_str(&config_str)
+pub fn load_config(file_path: &str) -> Result<Config, Box<dyn std::error::Error>> {
+    match fs::read_to_string(file_path) {
+        Ok(config_str) => {
+            info!("Config file read successfully.");
+            match serde_yaml::from_str(&config_str) {
+                Ok(config) => Ok(config),
+                Err(e) => {
+                    error!("Failed to parse config file: {}", e);
+                    Err(Box::new(e))
+                }
+            }
+        },
+        Err(e) => {
+            error!("Failed to read config file: {}", e);
+            Err(Box::new(e))
+        }
+    }
 }

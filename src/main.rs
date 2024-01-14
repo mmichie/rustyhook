@@ -5,6 +5,7 @@ use config::SpecificOptions;
 use config::{load_config, EventType};
 use handlers::{sqs_handler, webhook_handler};
 use log::error;
+use log::info;
 
 #[tokio::main]
 async fn main() {
@@ -26,9 +27,14 @@ async fn main() {
         .get_one::<String>("config")
         .expect("Config file path must be provided");
 
+    info!("Loading configuration from: {}", config_path);
+
     // Load the configuration file
     let config = match load_config(config_path) {
-        Ok(cfg) => cfg,
+        Ok(cfg) => {
+            info!("Configuration loaded successfully.");
+            cfg
+        }
         Err(e) => {
             error!("Failed to load configuration: {}", e);
             return;
@@ -37,13 +43,11 @@ async fn main() {
 
     // Iterate over each handler in the configuration
     for handler_config in config.handlers {
+        info!("Processing handler: {:?}", handler_config);
         match handler_config.event_type {
             EventType::SQS => {
-                if let SpecificOptions::SQS {
-                    queue_url,
-                    poll_interval,
-                } = handler_config.options.specific
-                {
+                if let SpecificOptions::SQS { queue_url, poll_interval } = handler_config.options.specific {
+                    info!("Initializing SQS handler");
                     if let Err(e) = sqs_handler::sqs_poller(&queue_url, poll_interval).await {
                         error!("Error in SQS handler: {}", e);
                     }
@@ -52,34 +56,30 @@ async fn main() {
                 }
             }
             EventType::WebPolling => {
-                // Initialize and run the Web Polling handler
                 // Placeholder: Insert Web Polling handler logic here
+                info!("Initializing Web Polling handler (Not implemented yet)");
             }
             EventType::Cron => {
-                // Initialize and run the Cron job handler
                 // Placeholder: Insert Cron handler logic here
+                info!("Initializing Cron job handler (Not implemented yet)");
             }
             EventType::Webhook => {
-                // Extract options for the Webhook handler
-                if let config::SpecificOptions::Webhook { port, path } =
-                    handler_config.options.specific
-                {
-                    // Start the webhook listener with the specified port and path
+                if let SpecificOptions::Webhook { port, path } = handler_config.options.specific {
+                    info!("Initializing Webhook listener on port: {}, path: {}", port, path);
                     webhook_handler::webhook_listener(port, path).await;
                 } else {
                     error!("Invalid options for Webhook handler");
                 }
             }
             EventType::Filesystem => {
-                // Initialize and run the Filesystem handler
                 // Placeholder: Insert Filesystem handler logic here
+                info!("Initializing Filesystem handler (Not implemented yet)");
             }
             EventType::Database => {
-                // Initialize and run the Database handler
                 // Placeholder: Insert Database handler logic here
+                info!("Initializing Database handler (Not implemented yet)");
             }
             _ => {
-                // Handle other types or unknown types
                 error!("Unknown handler type: {:?}", handler_config.event_type);
             }
         }
