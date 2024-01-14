@@ -1,14 +1,16 @@
 mod config;
-use clap::{Arg, ArgAction, Command};
-use config::{load_config, EventType, HandlerConfig};
-use log::{error, info};
+mod handlers;
+use clap::{Arg, Command};
+use config::{load_config, EventType};
+use handlers::webhook_handler;
+use log::{error};
 
 #[tokio::main]
 async fn main() {
-    let matches = Command::new("RustyHook")
+    let matches = Command::new("Arcnar")
         .version("0.0.1")
         .author("Matt Michie")
-        .about("Automates Git updates and Docker-compose restarts based on SQS messages")
+        .about("Event-driven automation tool")
         .arg(
             Arg::new("config")
                 .short('c')
@@ -37,24 +39,37 @@ async fn main() {
         match handler_config.event_type {
             EventType::SQS => {
                 // Initialize and run the SQS handler
-                // Use handler_config.options and handler_config.action
+                // Placeholder: Insert SQS handler logic here
             }
             EventType::WebPolling => {
                 // Initialize and run the Web Polling handler
+                // Placeholder: Insert Web Polling handler logic here
             }
             EventType::Cron => {
                 // Initialize and run the Cron job handler
+                // Placeholder: Insert Cron handler logic here
             }
             EventType::Webhook => {
-                // Initialize and run the Webhook listener
+                // Extract options for the Webhook handler
+                if let config::SpecificOptions::Webhook { port, path } = handler_config.options.specific {
+                    // Start the webhook listener with the specified port and path
+                    webhook_handler::webhook_listener(port, path).await;
+                } else {
+                    error!("Invalid options for Webhook handler");
+                }
             }
-            // Add other event types here
+            EventType::Filesystem => {
+                // Initialize and run the Filesystem handler
+                // Placeholder: Insert Filesystem handler logic here
+            }
+            EventType::Database => {
+                // Initialize and run the Database handler
+                // Placeholder: Insert Database handler logic here
+            }
             _ => {
                 // Handle other types or unknown types
                 error!("Unknown handler type: {:?}", handler_config.event_type);
             }
         }
     }
-
-    // Add any other necessary logic for your application
 }

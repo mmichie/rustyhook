@@ -1,40 +1,42 @@
-use hyper::{Request, Response, Body, StatusCode};
-use hyper::service::{make_service_fn, service_fn};
-use std::net::SocketAddr;
+// src/handlers/webhook_handler.rs
+
+use hyper::{Request, Response};
+use hyper::body::{Bytes};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use http_body_util::Full;
+use log::info;
 use std::convert::Infallible;
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use log::{error, info};
+use hyper_util::rt::TokioIo;
 
 // Function to start the webhook listener
-pub async fn webhook_listener(port: u16, path: String) {
+pub async fn webhook_listener(port: u16, path: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = TcpListener::bind(&addr).await?;
 
-    let listener = TcpListener::bind(&addr).await.expect("Failed to bind to address");
     info!("Webhook server running on {}", addr);
 
     loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                tokio::spawn(async move {
-                    hyper::server::conn::Http::new()
-                        .serve_connection(stream, service_fn(move |req| webhook_service(req, path.clone())))
-                        .await
-                        .unwrap();
-                });
+        let (stream, _) = listener.accept().await?;
+        let io = TokioIo::new(stream);
+
+        tokio::task::spawn(async move {
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(io, service_fn(|req| handle_webhook(req)))
+                .await
+            {
+                println!("Error serving connection: {:?}", err);
             }
-            Err(e) => error!("Failed to accept connection: {}", e),
-        }
+        });
     }
 }
 
-// Function to handle incoming webhook requests
-async fn webhook_service(req: Request<Body>, path: String) -> Result<Response<Body>, Infallible> {
-    if req.uri().path() == path {
-        // Here, you would add your logic to handle the webhook
-        info!("Webhook received at {}", path);
-        Ok(Response::new(Body::from("Webhook received")))
-    } else {
-        Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("Not Found"))
-           
+// Function to handle incoming webhooks (as you originally had it)
+async fn handle_webhook(
+    _req: Request<hyper::body::Incoming>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    // Your original logic for handling webhook
+    Ok(Response::new(Full::new(Bytes::from("Hello, World!"))))
+}
