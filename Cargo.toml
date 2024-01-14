@@ -10,13 +10,13 @@ clap = "4.4.13"
 dotenv = "0.15.0"
 env_logger = "0.10.1"
 git2 = "0.18.1"
-hyper = { version = "1", features = ["full"] }
-tokio = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
 log = "0.4.20"
 rusoto_core = "0.48.0"
 rusoto_sqs = "0.48.0"
-shiplift = "0.7.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
+shiplift = "0.7.0"
+tokio = { version = "1", features = ["full"] }
