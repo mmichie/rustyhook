@@ -2,8 +2,9 @@ mod config;
 mod handlers;
 use clap::{Arg, Command};
 use config::{load_config, EventType};
-use handlers::webhook_handler;
-use log::{error};
+use config::SpecificOptions;
+use handlers::{sqs_handler, webhook_handler};
+use log::error;
 
 #[tokio::main]
 async fn main() {
@@ -38,8 +39,17 @@ async fn main() {
     for handler_config in config.handlers {
         match handler_config.event_type {
             EventType::SQS => {
-                // Initialize and run the SQS handler
-                // Placeholder: Insert SQS handler logic here
+                if let SpecificOptions::SQS {
+                    queue_url,
+                    poll_interval,
+                } = handler_config.options.specific
+                {
+                    if let Err(e) = sqs_handler::sqs_poller(&queue_url, poll_interval).await {
+                        error!("Error in SQS handler: {}", e);
+                    }
+                } else {
+                    error!("Invalid options for SQS handler");
+                }
             }
             EventType::WebPolling => {
                 // Initialize and run the Web Polling handler
@@ -51,7 +61,9 @@ async fn main() {
             }
             EventType::Webhook => {
                 // Extract options for the Webhook handler
-                if let config::SpecificOptions::Webhook { port, path } = handler_config.options.specific {
+                if let config::SpecificOptions::Webhook { port, path } =
+                    handler_config.options.specific
+                {
                     // Start the webhook listener with the specified port and path
                     webhook_handler::webhook_listener(port, path).await;
                 } else {
