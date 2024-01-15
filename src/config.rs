@@ -1,6 +1,6 @@
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use log::{info, error};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -78,7 +78,7 @@ pub fn load_config(file_path: &str) -> Result<Config, Box<dyn std::error::Error>
                     Err(Box::new(e))
                 }
             }
-        },
+        }
         Err(e) => {
             error!("Failed to read config file: {}", e);
             Err(Box::new(e))
