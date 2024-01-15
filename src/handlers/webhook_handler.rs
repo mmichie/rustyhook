@@ -1,12 +1,10 @@
-// src/handlers/webhook_handler.rs
-
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response};
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use log::info;
+use log::{info, warn};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -24,22 +22,33 @@ pub async fn webhook_listener(
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
+        let path = path.clone();
 
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
-                .serve_connection(io, service_fn(|req| handle_webhook(req)))
+                .serve_connection(io, service_fn(move |req| handle_webhook(req, path.clone())))
                 .await
             {
-                println!("Error serving connection: {:?}", err);
+                warn!("Error serving connection: {:?}", err);
             }
         });
     }
 }
 
-// Function to handle incoming webhooks (as you originally had it)
+// Function to handle incoming webhooks
 async fn handle_webhook(
-    _req: Request<hyper::body::Incoming>,
+    req: Request<hyper::body::Incoming>,
+    path: String,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Your original logic for handling webhook
-    Ok(Response::new(Full::new(Bytes::from("Hello, World!"))))
+    if req.uri().path() == path {
+        // Process the webhook request
+        info!("Webhook received at {}", path);
+        Ok(Response::new(Full::new(Bytes::from("Webhook received"))))
+    } else {
+        // Respond with Not Found for requests on other paths
+        Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Full::new(Bytes::from("Not Found")))
+            .unwrap())
+    }
 }

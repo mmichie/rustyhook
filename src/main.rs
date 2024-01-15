@@ -46,7 +46,11 @@ async fn main() {
         info!("Processing handler: {:?}", handler_config);
         match handler_config.event_type {
             EventType::SQS => {
-                if let SpecificOptions::SQS { queue_url, poll_interval } = handler_config.options.specific {
+                if let SpecificOptions::SQS {
+                    queue_url,
+                    poll_interval,
+                } = handler_config.options.specific
+                {
                     info!("Initializing SQS handler");
                     if let Err(e) = sqs_handler::sqs_poller(&queue_url, poll_interval).await {
                         error!("Error in SQS handler: {}", e);
@@ -65,8 +69,14 @@ async fn main() {
             }
             EventType::Webhook => {
                 if let SpecificOptions::Webhook { port, path } = handler_config.options.specific {
-                    info!("Initializing Webhook listener on port: {}, path: {}", port, path);
-                    webhook_handler::webhook_listener(port, path).await;
+                    info!(
+                        "Initializing Webhook listener on port: {}, path: {}",
+                        port, path
+                    );
+                    match webhook_handler::webhook_listener(port, path).await {
+                        Ok(_) => info!("Webhook listener started successfully."),
+                        Err(e) => error!("Failed to start webhook listener: {}", e),
+                    }
                 } else {
                     error!("Invalid options for Webhook handler");
                 }
