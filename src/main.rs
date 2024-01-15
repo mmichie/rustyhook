@@ -89,9 +89,6 @@ async fn main() {
                 // Placeholder: Insert Database handler logic here
                 info!("Initializing Database handler (Not implemented yet)");
             }
-            _ => {
-                error!("Unknown handler type: {:?}", handler_config.event_type);
-            }
         }
     }
 }
