@@ -12,40 +12,39 @@ pub async fn sqs_poller(
     queue_url: String,
     poll_interval: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Retrieve AWS credentials and region from environment variables
-    let aws_region = env::var("AWS_REGION")
-        .expect("AWS_REGION not set")
-        .parse::<Region>()
-        .expect("Invalid AWS region");
+    info!("Initializing SQS poller for queue: {}", queue_url);
+
+    let aws_region = match env::var("AWS_REGION").map(|region| region.parse::<Region>()) {
+        Ok(Ok(region)) => region,
+        Ok(Err(_)) => return Err("Invalid AWS region".into()),
+        Err(_) => return Err("AWS_REGION not set".into()),
+    };
 
     let credentials_provider = EnvironmentProvider::default();
-    let client = SqsClient::new_with(
-        HttpClient::new().expect("Failed to create HTTP client"),
-        credentials_provider,
-        aws_region,
-    );
-    loop {
-        // Poll for messages
-        if let Some(messages) = poll_sqs_messages(&client, &queue_url).await {
-            for message in messages {
-                // Process each message
-                process_message(&message).await;
+    let client = SqsClient::new_with(HttpClient::new()?, credentials_provider, aws_region);
 
-                // Delete message from the queue to prevent reprocessing
-                delete_message(&client, &queue_url, &message).await;
+    loop {
+        info!("Polling SQS messages...");
+        match poll_sqs_messages(&client, &queue_url).await {
+            Some(messages) if !messages.is_empty() => {
+                info!("Received {} messages", messages.len());
+                for message in messages {
+                    process_message(&message).await;
+                    delete_message(&client, &queue_url, &message).await;
+                }
             }
+            Some(_) => info!("No new messages received"),
+            None => info!("No messages received"),
         }
 
-        // Wait for the next poll interval
         sleep(Duration::from_secs(poll_interval)).await;
     }
 }
 
-// Function to poll SQS messages
 async fn poll_sqs_messages(client: &SqsClient, queue_url: &str) -> Option<Vec<Message>> {
     let request = ReceiveMessageRequest {
         queue_url: queue_url.to_string(),
-        wait_time_seconds: Some(20), // Enable long polling for 20 seconds
+        wait_time_seconds: Some(20),
         max_number_of_messages: Some(10),
         ..Default::default()
     };
@@ -53,19 +52,17 @@ async fn poll_sqs_messages(client: &SqsClient, queue_url: &str) -> Option<Vec<Me
     match client.receive_message(request).await {
         Ok(response) => response.messages,
         Err(e) => {
-            error!("Error receiving messages: {}", e);
+            error!("Error polling messages: {}", e);
             None
         }
     }
 }
 
-// Function to process a single SQS message
 async fn process_message(message: &Message) {
-    // TODO: Add your message processing logic here
     info!("Processing message: {:?}", message);
+    // Add message processing logic here
 }
 
-// Function to delete a message from the SQS queue
 async fn delete_message(client: &SqsClient, queue_url: &str, message: &Message) {
     if let Some(receipt_handle) = &message.receipt_handle {
         let delete_request = DeleteMessageRequest {
@@ -73,8 +70,9 @@ async fn delete_message(client: &SqsClient, queue_url: &str, message: &Message) 
             receipt_handle: receipt_handle.to_string(),
         };
 
-        if let Err(e) = client.delete_message(delete_request).await {
-            error!("Error deleting message: {}", e);
+        match client.delete_message(delete_request).await {
+            Ok(_) => info!("Message deleted successfully."),
+            Err(e) => error!("Error deleting message: {}", e),
         }
     }
 }
