@@ -9,7 +9,7 @@ use tokio::time::{sleep, Duration};
 
 // Function to start the SQS message polling
 pub async fn sqs_poller(
-    queue_url: &String,
+    queue_url: String,
     poll_interval: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Retrieve AWS credentials and region from environment variables
