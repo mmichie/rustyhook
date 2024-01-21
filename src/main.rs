@@ -1,8 +1,8 @@
 mod config;
 use clap::{Arg, Command};
+use futures::future::join_all;
 use log::{error, info, warn};
 use tokio;
-use futures::future::join_all;
 use tokio::task::JoinHandle;
 
 mod handlers {
@@ -48,9 +48,11 @@ async fn main() {
                     handler_config.options.poll_interval,
                 ) {
                     let sqs_future = tokio::spawn(async move {
-                        sqs_handler::sqs_poller(queue_url, poll_interval).await.unwrap_or_else(|e| {
-                            error!("SQS handler error: {:?}", e);
-                        });
+                        sqs_handler::sqs_poller(queue_url, poll_interval)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!("SQS handler error: {:?}", e);
+                            });
                     });
                     all_futures.push(sqs_future);
                 }
@@ -60,9 +62,11 @@ async fn main() {
                     (handler_config.options.port, handler_config.options.path)
                 {
                     let webhook_future = tokio::spawn(async move {
-                        webhook_handler::webhook_listener(port, path).await.unwrap_or_else(|e| {
-                            error!("Webhook handler error: {:?}", e);
-                        });
+                        webhook_handler::webhook_listener(port, path)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!("Webhook handler error: {:?}", e);
+                            });
                     });
                     all_futures.push(webhook_future);
                 }
