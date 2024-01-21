@@ -6,12 +6,13 @@ use tokio;
 use tokio::task::JoinHandle;
 
 mod handlers {
+    pub mod filesystem_handler;
     pub mod sqs_handler;
     pub mod webhook_handler;
 }
 
 use crate::config::{load_config, EventType};
-use crate::handlers::{sqs_handler, webhook_handler};
+use crate::handlers::{filesystem_handler, sqs_handler, webhook_handler};
 
 #[tokio::main]
 async fn main() {
@@ -71,14 +72,23 @@ async fn main() {
                     all_futures.push(webhook_future);
                 }
             }
+            EventType::Filesystem => {
+                if let Some(path) = handler_config.options.path {
+                    let filesystem_future = tokio::spawn(async move {
+                        filesystem_handler::filesystem_watcher(path, "write".to_string()) // or "create", based on your needs
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!("Filesystem handler error: {:?}", e);
+                            });
+                    });
+                    all_futures.push(filesystem_future);
+                }
+            }
             EventType::WebPolling => {
                 warn!("WebPolling is not yet implemented");
             }
             EventType::Cron => {
                 warn!("Cron is not yet implemented");
-            }
-            EventType::Filesystem => {
-                warn!("Filesystem is not yet implemented");
             }
             EventType::Database => {
                 warn!("Database is not yet implemented");
