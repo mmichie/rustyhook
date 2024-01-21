@@ -4,7 +4,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use log::{info, warn};
+use log::{error, info, warn};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -15,23 +15,39 @@ pub async fn webhook_listener(
     path: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(&addr).await?;
-
-    info!("Webhook server running on {}", addr);
+    let listener = match TcpListener::bind(&addr).await {
+        Ok(listener) => {
+            info!("Webhook server running on {}", addr);
+            listener
+        }
+        Err(e) => {
+            error!("Failed to bind webhook listener: {}", e);
+            return Err(e.into());
+        }
+    };
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        let io = TokioIo::new(stream);
-        let path = path.clone();
-
-        tokio::task::spawn(async move {
-            if let Err(err) = http1::Builder::new()
-                .serve_connection(io, service_fn(move |req| handle_webhook(req, path.clone())))
-                .await
-            {
-                warn!("Error serving connection: {:?}", err);
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let io = TokioIo::new(stream);
+                let path_clone = path.clone();
+                tokio::task::spawn(async move {
+                    if let Err(err) = http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(move |req| handle_webhook(req, path_clone.clone())),
+                        )
+                        .await
+                    {
+                        warn!("Error serving connection: {:?}", err);
+                    }
+                });
             }
-        });
+            Err(e) => {
+                error!("Error accepting connection: {}", e);
+                // Consider if you want to continue looping or not
+            }
+        }
     }
 }
 

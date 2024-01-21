@@ -1405,6 +1405,7 @@ dependencies = [
  "clap",
  "dotenv",
  "env_logger",
+ "futures",
  "git2",
  "http-body-util",
  "hyper 1.1.0",

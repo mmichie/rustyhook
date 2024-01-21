@@ -1,6 +1,6 @@
 mod config;
 use clap::{Arg, Command};
-use log::{error, info, warn};
+use log::{info, warn};
 use tokio;
 
 mod handlers {
@@ -37,29 +37,27 @@ async fn main() {
     let config = load_config(config_path).expect("Failed to load configuration");
 
     let mut handler_futures = Vec::new();
+    let mut webhook_future = None;
 
     for handler_config in config.handlers {
         match handler_config.event_type {
             EventType::SQS => {
-                if let Some(queue_url) = handler_config.options.queue_url {
-                    if let Some(poll_interval) = handler_config.options.poll_interval {
-                        info!("Initializing SQS handler for queue: {}", queue_url);
-                        let sqs_future = tokio::spawn(async move {
-                            sqs_handler::sqs_poller(queue_url, poll_interval).await
-                        });
-                        handler_futures.push(sqs_future);
-                    }
+                if let (Some(queue_url), Some(poll_interval)) = (
+                    handler_config.options.queue_url,
+                    handler_config.options.poll_interval,
+                ) {
+                    let sqs_future = tokio::spawn(async move {
+                        sqs_handler::sqs_poller(queue_url, poll_interval).await
+                    });
+                    handler_futures.push(sqs_future);
                 }
             }
             EventType::Webhook => {
-                if let Some(port) = handler_config.options.port {
-                    if let Some(path) = handler_config.options.path {
-                        info!("Initializing Webhook handler on port {} with path {}", port, path);
-                        let webhook_future = tokio::spawn(async move {
-                            webhook_handler::webhook_listener(port, path).await
-                        });
-                        handler_futures.push(webhook_future);
-                    }
+                if let (Some(port), Some(path)) =
+                    (handler_config.options.port, handler_config.options.path)
+                {
+                    // Store the webhook listener to be run later
+                    webhook_future = Some(webhook_handler::webhook_listener(port, path));
                 }
             }
             EventType::WebPolling => {
@@ -77,9 +75,16 @@ async fn main() {
         }
     }
 
-    for future in handler_futures {
-        if let Err(e) = future.await {
-            error!("An error occurred in a handler: {}", e);
-        }
+    // Await all other handler futures
+    if !handler_futures.is_empty() {
+        futures::future::join_all(handler_futures).await;
     }
+
+    // If there's a webhook handler, start it now and let it run indefinitely
+    if let Some(webhook) = webhook_future {
+        info!("Starting webhook listener...");
+        let _ = webhook.await;
+    }
+
+    info!("All non-infinite handlers have completed their execution.");
 }
