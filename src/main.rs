@@ -75,7 +75,7 @@ async fn main() {
             EventType::Filesystem => {
                 if let Some(path) = handler_config.options.path {
                     let filesystem_future = tokio::spawn(async move {
-                        filesystem_handler::filesystem_watcher(path, "write".to_string()) // or "create", based on your needs
+                        filesystem_handler::filesystem_watcher(path)
                             .await
                             .unwrap_or_else(|e| {
                                 error!("Filesystem handler error: {:?}", e);

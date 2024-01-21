@@ -1,13 +1,9 @@
-use log::{error, info};
-use notify::event::{CreateKind, EventKind, ModifyKind};
-use notify::{Config, RecursiveMode, Watcher};
+use log::{debug, error, info};
+use notify::{event::EventKind, Config, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::mpsc::channel;
 
-pub async fn filesystem_watcher(
-    path: String,
-    event_type: String,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn filesystem_watcher(path: String) -> Result<(), Box<dyn std::error::Error>> {
     info!("Initializing filesystem watcher for path: {}", path);
 
     let (tx, rx) = channel::<notify::Result<notify::Event>>();
@@ -20,15 +16,22 @@ pub async fn filesystem_watcher(
 
     loop {
         match rx.recv() {
-            Ok(Ok(event)) => match event.kind {
-                EventKind::Create(CreateKind::Any) if event_type == "create" => {
-                    info!("Create event detected in {:?}", event.paths);
+            Ok(Ok(event)) => {
+                debug!("Received event: {:?}", event);
+                match event.kind {
+                    EventKind::Create(_) => {
+                        info!("Create event detected in {:?}", event.paths);
+                    }
+                    EventKind::Modify(_) => {
+                        info!("Modify event detected in {:?}", event.paths);
+                    }
+                    EventKind::Remove(_) => {
+                        info!("Remove event detected in {:?}", event.paths);
+                    }
+                    // Add more cases as needed
+                    _ => debug!("Other event detected: {:?}", event.kind),
                 }
-                EventKind::Modify(ModifyKind::Any) if event_type == "write" => {
-                    info!("Modify event detected in {:?}", event.paths);
-                }
-                _ => {}
-            },
+            }
             Ok(Err(e)) => error!("Watch error: {:?}", e),
             Err(e) => error!("Channel receive error: {:?}", e),
         }
