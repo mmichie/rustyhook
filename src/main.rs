@@ -1,17 +1,18 @@
 mod config;
 use clap::{Arg, Command};
+use futures::future::join_all;
 use log::{error, info, warn};
 use tokio;
-use futures::future::join_all;
 use tokio::task::JoinHandle;
 
 mod handlers {
+    pub mod filesystem_handler;
     pub mod sqs_handler;
     pub mod webhook_handler;
 }
 
 use crate::config::{load_config, EventType};
-use crate::handlers::{sqs_handler, webhook_handler};
+use crate::handlers::{filesystem_handler, sqs_handler, webhook_handler};
 
 #[tokio::main]
 async fn main() {
@@ -48,9 +49,11 @@ async fn main() {
                     handler_config.options.poll_interval,
                 ) {
                     let sqs_future = tokio::spawn(async move {
-                        sqs_handler::sqs_poller(queue_url, poll_interval).await.unwrap_or_else(|e| {
-                            error!("SQS handler error: {:?}", e);
-                        });
+                        sqs_handler::sqs_poller(queue_url, poll_interval)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!("SQS handler error: {:?}", e);
+                            });
                     });
                     all_futures.push(sqs_future);
                 }
@@ -60,11 +63,25 @@ async fn main() {
                     (handler_config.options.port, handler_config.options.path)
                 {
                     let webhook_future = tokio::spawn(async move {
-                        webhook_handler::webhook_listener(port, path).await.unwrap_or_else(|e| {
-                            error!("Webhook handler error: {:?}", e);
-                        });
+                        webhook_handler::webhook_listener(port, path)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!("Webhook handler error: {:?}", e);
+                            });
                     });
                     all_futures.push(webhook_future);
+                }
+            }
+            EventType::Filesystem => {
+                if let Some(path) = handler_config.options.path {
+                    let filesystem_future = tokio::spawn(async move {
+                        filesystem_handler::filesystem_watcher(path)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!("Filesystem handler error: {:?}", e);
+                            });
+                    });
+                    all_futures.push(filesystem_future);
                 }
             }
             EventType::WebPolling => {
@@ -72,9 +89,6 @@ async fn main() {
             }
             EventType::Cron => {
                 warn!("Cron is not yet implemented");
-            }
-            EventType::Filesystem => {
-                warn!("Filesystem is not yet implemented");
             }
             EventType::Database => {
                 warn!("Database is not yet implemented");
