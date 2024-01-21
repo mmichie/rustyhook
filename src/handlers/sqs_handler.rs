@@ -1,5 +1,3 @@
-// src/handlers/sqs_handler.rs
-
 use log::{error, info};
 use rusoto_core::credential::EnvironmentProvider;
 use rusoto_core::{HttpClient, Region};
@@ -16,15 +14,21 @@ pub async fn sqs_poller(
 
     let aws_region = match env::var("AWS_REGION").map(|region| region.parse::<Region>()) {
         Ok(Ok(region)) => region,
-        Ok(Err(_)) => return Err("Invalid AWS region".into()),
-        Err(_) => return Err("AWS_REGION not set".into()),
+        Ok(Err(_)) => {
+            error!("Invalid AWS region format");
+            return Err("Invalid AWS region".into());
+        }
+        Err(_) => {
+            error!("AWS_REGION environment variable not set");
+            return Err("AWS_REGION not set".into());
+        }
     };
 
     let credentials_provider = EnvironmentProvider::default();
     let client = SqsClient::new_with(HttpClient::new()?, credentials_provider, aws_region);
 
     loop {
-        info!("Polling SQS messages...");
+        info!("Polling SQS messages from {}", queue_url);
         match poll_sqs_messages(&client, &queue_url).await {
             Some(messages) if !messages.is_empty() => {
                 info!("Received {} messages", messages.len());
@@ -34,9 +38,10 @@ pub async fn sqs_poller(
                 }
             }
             Some(_) => info!("No new messages received"),
-            None => info!("No messages received"),
+            None => info!("No messages received during this poll"),
         }
 
+        info!("Waiting for next poll interval ({} seconds)", poll_interval);
         sleep(Duration::from_secs(poll_interval)).await;
     }
 }
@@ -50,7 +55,10 @@ async fn poll_sqs_messages(client: &SqsClient, queue_url: &str) -> Option<Vec<Me
     };
 
     match client.receive_message(request).await {
-        Ok(response) => response.messages,
+        Ok(response) => {
+            info!("Successfully polled messages");
+            response.messages
+        }
         Err(e) => {
             error!("Error polling messages: {}", e);
             None
@@ -74,5 +82,7 @@ async fn delete_message(client: &SqsClient, queue_url: &str, message: &Message) 
             Ok(_) => info!("Message deleted successfully."),
             Err(e) => error!("Error deleting message: {}", e),
         }
+    } else {
+        error!("No receipt handle found for message: {:?}", message);
     }
 }
