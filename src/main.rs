@@ -37,7 +37,10 @@ async fn main() {
 
     info!("Loading configuration from: {}", config_path);
 
-    let config: config::Config = load_config(config_path).expect("Failed to load configuration");
+    let config: config::Config = load_config(config_path).unwrap_or_else(|e| {
+        error!("Failed to load configuration: {:?}", e);
+        std::process::exit(1);
+    });
 
     let mut all_futures: Vec<JoinHandle<()>> = Vec::new();
 
@@ -48,6 +51,7 @@ async fn main() {
                     handler_config.options.queue_url,
                     handler_config.options.poll_interval,
                 ) {
+                    info!("Initializing SQS handler for queue: {}", queue_url);
                     let sqs_future: JoinHandle<()> = tokio::spawn(async move {
                         sqs_handler::sqs_poller(queue_url, poll_interval)
                             .await
@@ -62,6 +66,7 @@ async fn main() {
                 if let (Some(port), Some(path)) =
                     (handler_config.options.port, handler_config.options.path)
                 {
+                    info!("Initializing Webhook handler on port: {}", port);
                     let webhook_future = tokio::spawn(async move {
                         webhook_handler::webhook_listener(port, path)
                             .await
@@ -74,6 +79,7 @@ async fn main() {
             }
             EventType::Filesystem => {
                 if let Some(path) = handler_config.options.path {
+                    info!("Initializing Filesystem handler for path: {}", path);
                     let filesystem_future = tokio::spawn(async move {
                         filesystem_handler::filesystem_watcher(path)
                             .await
@@ -96,9 +102,11 @@ async fn main() {
         }
     }
 
-    if !all_futures.is_empty() {
+    if all_futures.is_empty() {
+        info!("No handlers were initialized.");
+    } else {
+        info!("All handlers initialized, starting execution.");
         let _ = join_all(all_futures).await;
+        info!("All handlers have completed their execution.");
     }
-
-    info!("All handlers have completed their execution.");
 }
