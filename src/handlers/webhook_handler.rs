@@ -14,8 +14,8 @@ pub async fn webhook_listener(
     port: u16,
     path: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = match TcpListener::bind(&addr).await {
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener: TcpListener = match TcpListener::bind(&addr).await {
         Ok(listener) => {
             info!("Webhook server running on {}", addr);
             listener

@@ -17,7 +17,7 @@ use crate::handlers::{filesystem_handler, sqs_handler, webhook_handler};
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    let matches = Command::new("Arcnar")
+    let matches: clap::ArgMatches = Command::new("Arcnar")
         .version("0.0.1")
         .author("Matt Michie")
         .about("Event-driven automation tool")
@@ -31,13 +31,13 @@ async fn main() {
         )
         .get_matches();
 
-    let config_path = matches
+    let config_path: &String = matches
         .get_one::<String>("config")
         .expect("Failed to get config path");
 
     info!("Loading configuration from: {}", config_path);
 
-    let config = load_config(config_path).expect("Failed to load configuration");
+    let config: config::Config = load_config(config_path).expect("Failed to load configuration");
 
     let mut all_futures: Vec<JoinHandle<()>> = Vec::new();
 
@@ -48,7 +48,7 @@ async fn main() {
                     handler_config.options.queue_url,
                     handler_config.options.poll_interval,
                 ) {
-                    let sqs_future = tokio::spawn(async move {
+                    let sqs_future: JoinHandle<()> = tokio::spawn(async move {
                         sqs_handler::sqs_poller(queue_url, poll_interval)
                             .await
                             .unwrap_or_else(|e| {

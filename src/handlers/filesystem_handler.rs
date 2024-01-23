@@ -1,5 +1,5 @@
 use log::{debug, error, info};
-use notify::{event::EventKind, Config, RecursiveMode, Watcher};
+use notify::{event::EventKind, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::mpsc::channel;
 
@@ -7,8 +7,7 @@ pub async fn filesystem_watcher(path: String) -> Result<(), Box<dyn std::error::
     info!("Initializing filesystem watcher for path: {}", path);
 
     let (tx, rx) = channel::<notify::Result<notify::Event>>();
-    let _config = Config::default();
-    let mut watcher = notify::recommended_watcher(move |res| tx.send(res).unwrap())?;
+    let mut watcher: notify::KqueueWatcher = notify::recommended_watcher(move |res| tx.send(res).unwrap())?;
 
     watcher.watch(Path::new(&path), RecursiveMode::Recursive)?;
 

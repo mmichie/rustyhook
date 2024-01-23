@@ -12,7 +12,7 @@ pub async fn sqs_poller(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Initializing SQS poller for queue: {}", queue_url);
 
-    let aws_region = match env::var("AWS_REGION").map(|region| region.parse::<Region>()) {
+    let aws_region: Region = match env::var("AWS_REGION").map(|region| region.parse::<Region>()) {
         Ok(Ok(region)) => region,
         Ok(Err(_)) => {
             error!("Invalid AWS region format");
@@ -24,8 +24,8 @@ pub async fn sqs_poller(
         }
     };
 
-    let credentials_provider = EnvironmentProvider::default();
-    let client = SqsClient::new_with(HttpClient::new()?, credentials_provider, aws_region);
+    let credentials_provider: EnvironmentProvider = EnvironmentProvider::default();
+    let client: SqsClient = SqsClient::new_with(HttpClient::new()?, credentials_provider, aws_region);
 
     loop {
         info!("Polling SQS messages from {}", queue_url);
