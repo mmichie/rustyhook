@@ -25,7 +25,8 @@ pub async fn sqs_poller(
     };
 
     let credentials_provider: EnvironmentProvider = EnvironmentProvider::default();
-    let client: SqsClient = SqsClient::new_with(HttpClient::new()?, credentials_provider, aws_region);
+    let client: SqsClient =
+        SqsClient::new_with(HttpClient::new()?, credentials_provider, aws_region);
 
     loop {
         info!("Polling SQS messages from {}", queue_url);

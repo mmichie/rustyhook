@@ -7,7 +7,8 @@ pub async fn filesystem_watcher(path: String) -> Result<(), Box<dyn std::error::
     info!("Initializing filesystem watcher for path: {}", path);
 
     let (tx, rx) = channel::<notify::Result<notify::Event>>();
-    let mut watcher: notify::KqueueWatcher = notify::recommended_watcher(move |res| tx.send(res).unwrap())?;
+    let mut watcher: notify::KqueueWatcher =
+        notify::recommended_watcher(move |res| tx.send(res).unwrap())?;
 
     watcher.watch(Path::new(&path), RecursiveMode::Recursive)?;
 
