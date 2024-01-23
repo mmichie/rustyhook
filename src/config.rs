@@ -34,6 +34,7 @@ pub struct Options {
     pub port: Option<u16>,
     pub path: Option<String>,
     pub aws_region: Option<String>,
+    pub cron_expression: Option<String>,
 }
 
 // Function to load and parse the YAML configuration file

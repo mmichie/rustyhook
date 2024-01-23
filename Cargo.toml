@@ -22,3 +22,6 @@ shiplift = "0.7.0"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3.30"
 notify = { version = "6.1.1", default-features = false, features = ["macos_kqueue"] }
+cron = "0.12.0"
+chrono = "0.4.32"
+datetime = "0.5.2"

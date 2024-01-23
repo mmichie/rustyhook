@@ -6,13 +6,14 @@ use tokio;
 use tokio::task::JoinHandle;
 
 mod handlers {
+    pub mod cron_handler;
     pub mod filesystem_handler;
     pub mod sqs_handler;
     pub mod webhook_handler;
 }
 
 use crate::config::{load_config, EventType};
-use crate::handlers::{filesystem_handler, sqs_handler, webhook_handler};
+use crate::handlers::{cron_handler, filesystem_handler, sqs_handler, webhook_handler};
 
 #[tokio::main]
 async fn main() {
@@ -66,16 +67,30 @@ fn initialize_handlers(config: &config::Config) -> Vec<JoinHandle<()>> {
         match handler_config.event_type {
             EventType::SQS => initialize_sqs_handler(&handler_config, &mut all_futures),
             EventType::Webhook => initialize_webhook_handler(&handler_config, &mut all_futures),
-            EventType::Filesystem => initialize_filesystem_handler(&handler_config, &mut all_futures),
+            EventType::Filesystem => {
+                initialize_filesystem_handler(&handler_config, &mut all_futures)
+            }
             EventType::WebPolling => warn!("WebPolling is not yet implemented"),
-            EventType::Cron => warn!("Cron is not yet implemented"),
+            EventType::Cron => {
+                if let Ok(cron_future) = cron_handler::initialize_cron_handler(handler_config) {
+                    all_futures.push(cron_future);
+                } else {
+                    error!(
+                        "Failed to initialize Cron handler for: {}",
+                        handler_config.name
+                    );
+                }
+            }
             EventType::Database => warn!("Database is not yet implemented"),
         }
     }
     all_futures
 }
 
-fn initialize_sqs_handler(handler_config: &config::HandlerConfig, all_futures: &mut Vec<JoinHandle<()>>) {
+fn initialize_sqs_handler(
+    handler_config: &config::HandlerConfig,
+    all_futures: &mut Vec<JoinHandle<()>>,
+) {
     if let (Some(queue_url), Some(poll_interval)) = (
         handler_config.options.queue_url.clone(),
         handler_config.options.poll_interval,
@@ -92,7 +107,10 @@ fn initialize_sqs_handler(handler_config: &config::HandlerConfig, all_futures: &
     }
 }
 
-fn initialize_webhook_handler(handler_config: &config::HandlerConfig, all_futures: &mut Vec<JoinHandle<()>>) {
+fn initialize_webhook_handler(
+    handler_config: &config::HandlerConfig,
+    all_futures: &mut Vec<JoinHandle<()>>,
+) {
     if let (Some(port), Some(path)) = (
         handler_config.options.port,
         handler_config.options.path.clone(),
@@ -109,7 +127,10 @@ fn initialize_webhook_handler(handler_config: &config::HandlerConfig, all_future
     }
 }
 
-fn initialize_filesystem_handler(handler_config: &config::HandlerConfig, all_futures: &mut Vec<JoinHandle<()>>) {
+fn initialize_filesystem_handler(
+    handler_config: &config::HandlerConfig,
+    all_futures: &mut Vec<JoinHandle<()>>,
+) {
     if let Some(path) = handler_config.options.path.clone() {
         info!("Initializing Filesystem handler for path: {}", path);
         let filesystem_future = tokio::spawn(async move {
