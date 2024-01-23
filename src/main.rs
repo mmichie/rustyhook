@@ -17,6 +17,21 @@ use crate::handlers::{filesystem_handler, sqs_handler, webhook_handler};
 #[tokio::main]
 async fn main() {
     env_logger::init();
+
+    let config_path = get_config_path();
+    let config = load_app_config(&config_path);
+    let all_futures = initialize_handlers(&config);
+
+    if all_futures.is_empty() {
+        info!("No handlers were initialized.");
+    } else {
+        info!("All handlers initialized, starting execution.");
+        let _ = join_all(all_futures).await;
+        info!("All handlers have completed their execution.");
+    }
+}
+
+fn get_config_path() -> String {
     let matches: clap::ArgMatches = Command::new("Arcnar")
         .version("0.0.1")
         .author("Matt Michie")
@@ -31,82 +46,79 @@ async fn main() {
         )
         .get_matches();
 
-    let config_path: &String = matches
+    matches
         .get_one::<String>("config")
-        .expect("Failed to get config path");
+        .expect("Failed to get config path")
+        .clone()
+}
 
+fn load_app_config(config_path: &str) -> config::Config {
     info!("Loading configuration from: {}", config_path);
-
-    let config: config::Config = load_config(config_path).unwrap_or_else(|e| {
+    load_config(config_path).unwrap_or_else(|e| {
         error!("Failed to load configuration: {:?}", e);
         std::process::exit(1);
-    });
+    })
+}
 
-    let mut all_futures: Vec<JoinHandle<()>> = Vec::new();
-
-    for handler_config in config.handlers {
+fn initialize_handlers(config: &config::Config) -> Vec<JoinHandle<()>> {
+    let mut all_futures = Vec::new();
+    for handler_config in &config.handlers {
         match handler_config.event_type {
-            EventType::SQS => {
-                if let (Some(queue_url), Some(poll_interval)) = (
-                    handler_config.options.queue_url,
-                    handler_config.options.poll_interval,
-                ) {
-                    info!("Initializing SQS handler for queue: {}", queue_url);
-                    let sqs_future: JoinHandle<()> = tokio::spawn(async move {
-                        sqs_handler::sqs_poller(queue_url, poll_interval)
-                            .await
-                            .unwrap_or_else(|e| {
-                                error!("SQS handler error: {:?}", e);
-                            });
-                    });
-                    all_futures.push(sqs_future);
-                }
-            }
-            EventType::Webhook => {
-                if let (Some(port), Some(path)) =
-                    (handler_config.options.port, handler_config.options.path)
-                {
-                    info!("Initializing Webhook handler on port: {}", port);
-                    let webhook_future = tokio::spawn(async move {
-                        webhook_handler::webhook_listener(port, path)
-                            .await
-                            .unwrap_or_else(|e| {
-                                error!("Webhook handler error: {:?}", e);
-                            });
-                    });
-                    all_futures.push(webhook_future);
-                }
-            }
-            EventType::Filesystem => {
-                if let Some(path) = handler_config.options.path {
-                    info!("Initializing Filesystem handler for path: {}", path);
-                    let filesystem_future = tokio::spawn(async move {
-                        filesystem_handler::filesystem_watcher(path)
-                            .await
-                            .unwrap_or_else(|e| {
-                                error!("Filesystem handler error: {:?}", e);
-                            });
-                    });
-                    all_futures.push(filesystem_future);
-                }
-            }
-            EventType::WebPolling => {
-                warn!("WebPolling is not yet implemented");
-            }
-            EventType::Cron => {
-                warn!("Cron is not yet implemented");
-            }
-            EventType::Database => {
-                warn!("Database is not yet implemented");
-            }
+            EventType::SQS => initialize_sqs_handler(&handler_config, &mut all_futures),
+            EventType::Webhook => initialize_webhook_handler(&handler_config, &mut all_futures),
+            EventType::Filesystem => initialize_filesystem_handler(&handler_config, &mut all_futures),
+            EventType::WebPolling => warn!("WebPolling is not yet implemented"),
+            EventType::Cron => warn!("Cron is not yet implemented"),
+            EventType::Database => warn!("Database is not yet implemented"),
         }
     }
+    all_futures
+}
 
-    if all_futures.is_empty() {
-        info!("No handlers were initialized.");
-    } else {
-        info!("All handlers initialized, starting execution.");
-        let _ = join_all(all_futures).await;
-        info!("All handlers have completed their execution.");
+fn initialize_sqs_handler(handler_config: &config::HandlerConfig, all_futures: &mut Vec<JoinHandle<()>>) {
+    if let (Some(queue_url), Some(poll_interval)) = (
+        handler_config.options.queue_url.clone(),
+        handler_config.options.poll_interval,
+    ) {
+        info!("Initializing SQS handler for queue: {}", queue_url);
+        let sqs_future: JoinHandle<()> = tokio::spawn(async move {
+            sqs_handler::sqs_poller(queue_url, poll_interval)
+                .await
+                .unwrap_or_else(|e| {
+                    error!("SQS handler error: {:?}", e);
+                });
+        });
+        all_futures.push(sqs_future);
+    }
+}
+
+fn initialize_webhook_handler(handler_config: &config::HandlerConfig, all_futures: &mut Vec<JoinHandle<()>>) {
+    if let (Some(port), Some(path)) = (
+        handler_config.options.port,
+        handler_config.options.path.clone(),
+    ) {
+        info!("Initializing Webhook handler on port: {}", port);
+        let webhook_future = tokio::spawn(async move {
+            webhook_handler::webhook_listener(port, path)
+                .await
+                .unwrap_or_else(|e| {
+                    error!("Webhook handler error: {:?}", e);
+                });
+        });
+        all_futures.push(webhook_future);
+    }
+}
+
+fn initialize_filesystem_handler(handler_config: &config::HandlerConfig, all_futures: &mut Vec<JoinHandle<()>>) {
+    if let Some(path) = handler_config.options.path.clone() {
+        info!("Initializing Filesystem handler for path: {}", path);
+        let filesystem_future = tokio::spawn(async move {
+            filesystem_handler::filesystem_watcher(path)
+                .await
+                .unwrap_or_else(|e| {
+                    error!("Filesystem handler error: {:?}", e);
+                });
+        });
+        all_futures.push(filesystem_future);
     }
 }
