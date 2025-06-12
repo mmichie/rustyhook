@@ -6,22 +6,21 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = "4.4.13"
+clap = "4.5.40"
 dotenv = "0.15.0"
-env_logger = "0.10.1"
-git2 = "0.18.1"
+env_logger = "0.11.8"
+git2 = "0.20.2"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
-hyper = { version = "1", features = ["full"] }
-log = "0.4.20"
+hyper = { version = "1.6", features = ["full"] }
+log = "0.4.25"
 rusoto_core = "0.48.0"
 rusoto_sqs = "0.48.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.8"
+serde_yaml = "0.9"
 shiplift = "0.7.0"
 tokio = { version = "1", features = ["full"] }
-futures = "0.3.30"
-notify = { version = "6.1.1", default-features = false, features = ["macos_kqueue"] }
-cron = "0.12.0"
-chrono = "0.4.32"
-datetime = "0.5.2"
+futures = "0.3.31"
+notify = { version = "8.0.0", default-features = false, features = ["macos_kqueue"] }
+cron = "0.15.0"
+chrono = "0.4.41"
