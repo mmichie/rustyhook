@@ -50,10 +50,10 @@ Rustyhook is an event-driven automation framework that monitors various event so
 
 ### Configuration Format
 
-Handlers are defined in YAML with three required fields:
-- `handler`: Human-readable name
+Handlers are defined in YAML with four required fields:
+- `name`: Human-readable name for the handler
 - `type`: Event type (Filesystem, Webhook, SQS, Cron)
 - `options`: Type-specific configuration
-- `action.shell`: Command to execute
+- `shell`: Command to execute when triggered
 
 Example configuration available in `examples/` directory.
