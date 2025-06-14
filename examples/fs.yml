@@ -1,0 +1,10 @@
+---
+handlers:
+  - type: Filesystem
+    name: Filesystem Change Handler
+    options:
+      type: Filesystem
+      path: "/Users/mim/tmp"
+      event_type: "create" # or "write" for modifications
+    shell: "echo 'Filesystem change detected!' && some_script.sh"
+

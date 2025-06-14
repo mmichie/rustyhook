@@ -1,0 +1,8 @@
+---
+handlers:
+  - type: Cron
+    name: Cron Scheduler
+    options:
+      type: Cron
+      cron_expression: "*/5 * * * *"  # Every 5 minutes
+    shell: "echo 'Cron job executed at $(date)'"

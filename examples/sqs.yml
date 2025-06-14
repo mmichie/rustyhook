@@ -1,0 +1,9 @@
+---
+handlers:
+  - type: SQS
+    name: SQS Message Handler
+    options:
+      type: SQS
+      queue_url: "https://sqs.us-east-1.amazonaws.com/965149014028/git-test"
+      poll_interval: 30
+    shell: "cd /path/to/git/repo && git pull origin master && docker-compose restart"

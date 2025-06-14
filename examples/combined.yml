@@ -1,0 +1,23 @@
+---
+handlers:
+  - type: SQS
+    name: SQS Message Handler
+    options:
+      type: SQS
+      queue_url: "https://sqs.us-east-1.amazonaws.com/965149014028/git-test"
+      poll_interval: 30
+    shell: "cd /path/to/git/repo && git pull origin master && docker-compose restart"
+  - type: Webhook
+    name: Webhook Listener
+    options:
+      type: Webhook
+      port: 3000
+      path: "/webhook"
+    shell: "echo 'Webhook received!'"
+  - type: Filesystem
+    name: Filesystem Change Handler
+    options:
+      type: Filesystem
+      path: "/Users/mim/tmp"
+      event_type: "create" # or "write" for modifications
+    shell: "echo 'Filesystem change detected!' && some_script.sh"

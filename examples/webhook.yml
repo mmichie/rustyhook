@@ -1,0 +1,10 @@
+---
+handlers:
+  - type: Webhook
+    name: Webhook Listener
+    options:
+      type: Webhook
+      port: 3000
+      path: "/webhook"
+    shell: "echo 'Webhook received!'"
+
