@@ -17,7 +17,8 @@ pub struct HandlerConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum EventType {
-    SQS,
+    #[serde(rename = "SQS")]
+    Sqs,
     WebPolling,
     Cron,
     Webhook,

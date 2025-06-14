@@ -1,9 +1,9 @@
+use crate::command_executor::execute_shell_command;
 use crate::config::HandlerConfig;
 use chrono::Utc;
 use cron::Schedule;
 use log::{error, info};
 use std::error::Error;
-use std::process::Command;
 use std::str::FromStr;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
@@ -34,21 +34,7 @@ pub fn initialize_cron_handler(
                     sleep(std_duration).await;
                     
                     info!("Executing cron task '{}' at {:?}", handler_name, Utc::now());
-                    match Command::new("sh").arg("-c").arg(&shell_command).output() {
-                        Ok(output) => {
-                            if output.status.success() {
-                                info!("Cron task '{}' executed successfully", handler_name);
-                            } else {
-                                error!("Cron task '{}' failed with status: {}", handler_name, output.status);
-                                if !output.stderr.is_empty() {
-                                    error!("Error output: {}", String::from_utf8_lossy(&output.stderr));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to execute cron task '{}': {:?}", handler_name, e);
-                        }
-                    }
+                    execute_shell_command(&shell_command, &handler_name);
                 } else {
                     error!("Invalid duration calculated for next cron execution");
                     sleep(Duration::from_secs(60)).await;

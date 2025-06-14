@@ -1,8 +1,8 @@
+mod command_executor;
 mod config;
 use clap::{Arg, Command};
 use futures::future::join_all;
 use log::{error, info, warn};
-use tokio;
 use tokio::task::JoinHandle;
 
 mod handlers {
@@ -65,10 +65,10 @@ fn initialize_handlers(config: &config::Config) -> Vec<JoinHandle<()>> {
     let mut all_futures = Vec::new();
     for handler_config in &config.handlers {
         match handler_config.event_type {
-            EventType::SQS => initialize_sqs_handler(&handler_config, &mut all_futures),
-            EventType::Webhook => initialize_webhook_handler(&handler_config, &mut all_futures),
+            EventType::Sqs => initialize_sqs_handler(handler_config, &mut all_futures),
+            EventType::Webhook => initialize_webhook_handler(handler_config, &mut all_futures),
             EventType::Filesystem => {
-                initialize_filesystem_handler(&handler_config, &mut all_futures)
+                initialize_filesystem_handler(handler_config, &mut all_futures)
             }
             EventType::WebPolling => warn!("WebPolling is not yet implemented"),
             EventType::Cron => {
@@ -96,8 +96,10 @@ fn initialize_sqs_handler(
         handler_config.options.poll_interval,
     ) {
         info!("Initializing SQS handler for queue: {}", queue_url);
+        let shell_command = handler_config.shell.clone();
+        let handler_name = handler_config.name.clone();
         let sqs_future: JoinHandle<()> = tokio::spawn(async move {
-            sqs_handler::sqs_poller(queue_url, poll_interval)
+            sqs_handler::sqs_poller(queue_url, poll_interval, shell_command, handler_name)
                 .await
                 .unwrap_or_else(|e| {
                     error!("SQS handler error: {:?}", e);
@@ -116,8 +118,10 @@ fn initialize_webhook_handler(
         handler_config.options.path.clone(),
     ) {
         info!("Initializing Webhook handler on port: {}", port);
+        let shell_command = handler_config.shell.clone();
+        let handler_name = handler_config.name.clone();
         let webhook_future = tokio::spawn(async move {
-            webhook_handler::webhook_listener(port, path)
+            webhook_handler::webhook_listener(port, path, shell_command, handler_name)
                 .await
                 .unwrap_or_else(|e| {
                     error!("Webhook handler error: {:?}", e);
@@ -133,8 +137,10 @@ fn initialize_filesystem_handler(
 ) {
     if let Some(path) = handler_config.options.path.clone() {
         info!("Initializing Filesystem handler for path: {}", path);
+        let shell_command = handler_config.shell.clone();
+        let handler_name = handler_config.name.clone();
         let filesystem_future = tokio::spawn(async move {
-            filesystem_handler::filesystem_watcher(path)
+            filesystem_handler::filesystem_watcher(path, shell_command, handler_name)
                 .await
                 .unwrap_or_else(|e| {
                     error!("Filesystem handler error: {:?}", e);
