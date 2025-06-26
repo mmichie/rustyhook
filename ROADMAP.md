@@ -6,7 +6,7 @@ This document outlines planned features and improvements for RustyHook.
 - [x] Basic event handlers (Filesystem, Webhook, Cron, SQS)
 - [x] Shell command execution
 - [x] Cross-platform filesystem monitoring
-- [ ] Graceful shutdown support
+- [x] Graceful shutdown support
 - [ ] Command timeout handling
 - [ ] Retry logic with exponential backoff
 - [ ] Comprehensive test coverage
