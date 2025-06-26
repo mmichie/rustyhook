@@ -4,6 +4,7 @@ use rusoto_core::credential::EnvironmentProvider;
 use rusoto_core::{HttpClient, Region};
 use rusoto_sqs::{DeleteMessageRequest, Message, ReceiveMessageRequest, Sqs, SqsClient};
 use std::env;
+use tokio::sync::broadcast;
 use tokio::time::{sleep, Duration};
 
 // Function to start the SQS message polling
@@ -12,6 +13,7 @@ pub async fn sqs_poller(
     poll_interval: u64,
     shell_command: String,
     handler_name: String,
+    mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Initializing SQS poller for queue: {}", queue_url);
 
@@ -32,22 +34,33 @@ pub async fn sqs_poller(
         SqsClient::new_with(HttpClient::new()?, credentials_provider, aws_region);
 
     loop {
-        info!("Polling SQS messages from {}", queue_url);
-        match poll_sqs_messages(&client, &queue_url).await {
-            Some(messages) if !messages.is_empty() => {
-                info!("Received {} messages", messages.len());
-                for message in messages {
-                    process_message(&message, &shell_command, &handler_name).await;
-                    delete_message(&client, &queue_url, &message).await;
+        tokio::select! {
+            _ = async {
+                info!("Polling SQS messages from {}", queue_url);
+                match poll_sqs_messages(&client, &queue_url).await {
+                    Some(messages) if !messages.is_empty() => {
+                        info!("Received {} messages", messages.len());
+                        for message in messages {
+                            process_message(&message, &shell_command, &handler_name).await;
+                            delete_message(&client, &queue_url, &message).await;
+                        }
+                    }
+                    Some(_) => info!("No new messages received"),
+                    None => info!("No messages received during this poll"),
                 }
-            }
-            Some(_) => info!("No new messages received"),
-            None => info!("No messages received during this poll"),
-        }
 
-        info!("Waiting for next poll interval ({} seconds)", poll_interval);
-        sleep(Duration::from_secs(poll_interval)).await;
+                info!("Waiting for next poll interval ({} seconds)", poll_interval);
+                sleep(Duration::from_secs(poll_interval)).await;
+            } => {}
+            _ = shutdown_rx.recv() => {
+                info!("SQS handler '{}' received shutdown signal", handler_name);
+                break;
+            }
+        }
     }
+    
+    info!("SQS handler '{}' shutting down", handler_name);
+    Ok(())
 }
 
 async fn poll_sqs_messages(client: &SqsClient, queue_url: &str) -> Option<Vec<Message>> {

@@ -9,6 +9,7 @@ use log::{error, info, warn};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
 
 // Function to start the webhook listener
 pub async fn webhook_listener(
@@ -16,6 +17,7 @@ pub async fn webhook_listener(
     path: String,
     shell_command: String,
     handler_name: String,
+    mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener: TcpListener = match TcpListener::bind(&addr).await {
@@ -30,37 +32,47 @@ pub async fn webhook_listener(
     };
 
     loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let io = TokioIo::new(stream);
-                let path_clone = path.clone();
-                let shell_command_clone = shell_command.clone();
-                let handler_name_clone = handler_name.clone();
-                tokio::task::spawn(async move {
-                    if let Err(err) = http1::Builder::new()
-                        .serve_connection(
-                            io,
-                            service_fn(move |req| {
-                                handle_webhook(
-                                    req,
-                                    path_clone.clone(),
-                                    shell_command_clone.clone(),
-                                    handler_name_clone.clone(),
+        tokio::select! {
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, _)) => {
+                        let io = TokioIo::new(stream);
+                        let path_clone = path.clone();
+                        let shell_command_clone = shell_command.clone();
+                        let handler_name_clone = handler_name.clone();
+                        tokio::task::spawn(async move {
+                            if let Err(err) = http1::Builder::new()
+                                .serve_connection(
+                                    io,
+                                    service_fn(move |req| {
+                                        handle_webhook(
+                                            req,
+                                            path_clone.clone(),
+                                            shell_command_clone.clone(),
+                                            handler_name_clone.clone(),
+                                        )
+                                    }),
                                 )
-                            }),
-                        )
-                        .await
-                    {
-                        warn!("Error serving connection: {:?}", err);
+                                .await
+                            {
+                                warn!("Error serving connection: {:?}", err);
+                            }
+                        });
                     }
-                });
+                    Err(e) => {
+                        error!("Error accepting connection: {}", e);
+                    }
+                }
             }
-            Err(e) => {
-                error!("Error accepting connection: {}", e);
-                // Consider if you want to continue looping or not
+            _ = shutdown_rx.recv() => {
+                info!("Webhook handler '{}' received shutdown signal", handler_name);
+                break;
             }
         }
     }
+    
+    info!("Webhook handler '{}' shutting down", handler_name);
+    Ok(())
 }
 
 // Function to handle incoming webhooks
