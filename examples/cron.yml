@@ -6,3 +6,4 @@ handlers:
       type: Cron
       cron_expression: "*/5 * * * *"  # Every 5 minutes
     shell: "echo 'Cron job executed at $(date)'"
+    timeout: 60  # Command timeout in seconds (optional, defaults to 300)

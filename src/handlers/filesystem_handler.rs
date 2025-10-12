@@ -8,6 +8,7 @@ pub async fn filesystem_watcher(
     path: String,
     shell_command: String,
     handler_name: String,
+    timeout: u64,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Initializing filesystem watcher for path: {}", path);
@@ -48,7 +49,7 @@ pub async fn filesystem_watcher(
 
                         if should_execute {
                             let context = format!("Event: {:?}, Paths: {:?}", event.kind, event.paths);
-                            execute_shell_command_with_context(&shell_command, &handler_name, &context);
+                            execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout).await;
                         }
                     }
                     Err(e) => error!("Watch error: {:?}", e),

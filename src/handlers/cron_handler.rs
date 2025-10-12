@@ -23,6 +23,7 @@ pub fn initialize_cron_handler(
     let schedule = Schedule::from_str(cron_expression)?;
     let shell_command = handler_config.shell.clone();
     let handler_name = handler_config.name.clone();
+    let timeout = handler_config.timeout;
     let mut shutdown_rx = shutdown_tx.subscribe();
 
     info!("Initializing Cron handler '{}' with expression: {}", handler_name, cron_expression);
@@ -34,11 +35,11 @@ pub fn initialize_cron_handler(
                 let duration_until = next.signed_duration_since(now);
                 if let Ok(std_duration) = duration_until.to_std() {
                     info!("Next cron execution for '{}' scheduled at: {}", handler_name, next);
-                    
+
                     tokio::select! {
                         _ = sleep(std_duration) => {
                             info!("Executing cron task '{}' at {:?}", handler_name, Utc::now());
-                            execute_shell_command(&shell_command, &handler_name);
+                            execute_shell_command(&shell_command, &handler_name, timeout).await;
                         }
                         _ = shutdown_rx.recv() => {
                             info!("Cron handler '{}' received shutdown signal", handler_name);
@@ -47,7 +48,7 @@ pub fn initialize_cron_handler(
                     }
                 } else {
                     error!("Invalid duration calculated for next cron execution");
-                    
+
                     tokio::select! {
                         _ = sleep(Duration::from_secs(60)) => {}
                         _ = shutdown_rx.recv() => {
@@ -61,7 +62,7 @@ pub fn initialize_cron_handler(
                 break;
             }
         }
-        
+
         info!("Cron handler '{}' shutting down", handler_name);
     }))
 }

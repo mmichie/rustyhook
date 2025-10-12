@@ -13,6 +13,12 @@ pub struct HandlerConfig {
     pub name: String,     // Renamed from 'handler' to 'name'
     pub options: Options, // Changed to a struct to match the YAML format
     pub shell: String,    // Directly included as a field
+    #[serde(default = "default_timeout")]
+    pub timeout: u64,     // Command timeout in seconds (default: 300)
+}
+
+fn default_timeout() -> u64 {
+    300 // 5 minutes default timeout
 }
 
 #[derive(Debug, Serialize, Deserialize)]

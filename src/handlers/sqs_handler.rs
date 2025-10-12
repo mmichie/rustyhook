@@ -13,6 +13,7 @@ pub async fn sqs_poller(
     poll_interval: u64,
     shell_command: String,
     handler_name: String,
+    timeout: u64,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Initializing SQS poller for queue: {}", queue_url);
@@ -41,7 +42,7 @@ pub async fn sqs_poller(
                     Some(messages) if !messages.is_empty() => {
                         info!("Received {} messages", messages.len());
                         for message in messages {
-                            process_message(&message, &shell_command, &handler_name).await;
+                            process_message(&message, &shell_command, &handler_name, timeout).await;
                             delete_message(&client, &queue_url, &message).await;
                         }
                     }
@@ -83,14 +84,14 @@ async fn poll_sqs_messages(client: &SqsClient, queue_url: &str) -> Option<Vec<Me
     }
 }
 
-async fn process_message(message: &Message, shell_command: &str, handler_name: &str) {
+async fn process_message(message: &Message, shell_command: &str, handler_name: &str, timeout: u64) {
     info!("Processing message: {:?}", message);
-    
+
     let message_body = message.body.as_deref().unwrap_or("(empty)");
     let message_id = message.message_id.as_deref().unwrap_or("(no id)");
     let context = format!("Message ID: {}, Body: {}", message_id, message_body);
-    
-    execute_shell_command_with_context(shell_command, handler_name, &context);
+
+    execute_shell_command_with_context(shell_command, handler_name, &context, timeout).await;
 }
 
 async fn delete_message(client: &SqsClient, queue_url: &str, message: &Message) {

@@ -17,6 +17,7 @@ pub async fn webhook_listener(
     path: String,
     shell_command: String,
     handler_name: String,
+    timeout: u64,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -50,6 +51,7 @@ pub async fn webhook_listener(
                                             path_clone.clone(),
                                             shell_command_clone.clone(),
                                             handler_name_clone.clone(),
+                                            timeout,
                                         )
                                     }),
                                 )
@@ -81,18 +83,19 @@ async fn handle_webhook(
     path: String,
     shell_command: String,
     handler_name: String,
+    timeout: u64,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if req.uri().path() == path {
         // Process the webhook request
         info!("Webhook received at {}", path);
-        
+
         let method = req.method().to_string();
         let uri = req.uri().to_string();
         let context = format!("Method: {}, URI: {}", method, uri);
-        
+
         // Execute the configured shell command
-        execute_shell_command_with_context(&shell_command, &handler_name, &context);
-        
+        execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout).await;
+
         Ok(Response::new(Full::new(Bytes::from("Webhook received"))))
     } else {
         // Respond with Not Found for requests on other paths
