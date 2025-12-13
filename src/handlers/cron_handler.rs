@@ -1,4 +1,4 @@
-use crate::command_executor::execute_shell_command;
+use crate::command_executor::execute_shell_command_with_retry;
 use crate::config::HandlerConfig;
 use chrono::Utc;
 use cron::Schedule;
@@ -24,9 +24,13 @@ pub fn initialize_cron_handler(
     let shell_command = handler_config.shell.clone();
     let handler_name = handler_config.name.clone();
     let timeout = handler_config.timeout;
+    let retry_config = handler_config.retry.clone();
     let mut shutdown_rx = shutdown_tx.subscribe();
 
-    info!("Initializing Cron handler '{}' with expression: {}", handler_name, cron_expression);
+    info!(
+        "Initializing Cron handler '{}' with expression: {}",
+        handler_name, cron_expression
+    );
 
     Ok(tokio::spawn(async move {
         loop {
@@ -34,12 +38,15 @@ pub fn initialize_cron_handler(
             if let Some(next) = schedule.upcoming(chrono::Utc).next() {
                 let duration_until = next.signed_duration_since(now);
                 if let Ok(std_duration) = duration_until.to_std() {
-                    info!("Next cron execution for '{}' scheduled at: {}", handler_name, next);
+                    info!(
+                        "Next cron execution for '{}' scheduled at: {}",
+                        handler_name, next
+                    );
 
                     tokio::select! {
                         _ = sleep(std_duration) => {
                             info!("Executing cron task '{}' at {:?}", handler_name, Utc::now());
-                            execute_shell_command(&shell_command, &handler_name, timeout).await;
+                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config).await;
                         }
                         _ = shutdown_rx.recv() => {
                             info!("Cron handler '{}' received shutdown signal", handler_name);

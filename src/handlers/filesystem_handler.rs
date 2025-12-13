@@ -1,4 +1,5 @@
 use crate::command_executor::execute_shell_command_with_context;
+use crate::config::RetryConfig;
 use log::{debug, error, info};
 use notify::{event::EventKind, RecursiveMode, Watcher};
 use std::path::Path;
@@ -9,6 +10,7 @@ pub async fn filesystem_watcher(
     shell_command: String,
     handler_name: String,
     timeout: u64,
+    retry_config: RetryConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Initializing filesystem watcher for path: {}", path);
@@ -49,7 +51,7 @@ pub async fn filesystem_watcher(
 
                         if should_execute {
                             let context = format!("Event: {:?}, Paths: {:?}", event.kind, event.paths);
-                            execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout).await;
+                            execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config).await;
                         }
                     }
                     Err(e) => error!("Watch error: {:?}", e),
@@ -61,7 +63,7 @@ pub async fn filesystem_watcher(
             }
         }
     }
-    
+
     info!("Filesystem handler '{}' shutting down", handler_name);
     Ok(())
 }

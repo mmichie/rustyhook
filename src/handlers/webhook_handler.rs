@@ -1,4 +1,5 @@
 use crate::command_executor::execute_shell_command_with_context;
+use crate::config::RetryConfig;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -8,6 +9,7 @@ use hyper_util::rt::TokioIo;
 use log::{error, info, warn};
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 
@@ -18,6 +20,7 @@ pub async fn webhook_listener(
     shell_command: String,
     handler_name: String,
     timeout: u64,
+    retry_config: RetryConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -32,6 +35,9 @@ pub async fn webhook_listener(
         }
     };
 
+    // Wrap retry_config in Arc for sharing across spawned tasks
+    let retry_config = Arc::new(retry_config);
+
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -41,17 +47,20 @@ pub async fn webhook_listener(
                         let path_clone = path.clone();
                         let shell_command_clone = shell_command.clone();
                         let handler_name_clone = handler_name.clone();
+                        let retry_config_clone = Arc::clone(&retry_config);
                         tokio::task::spawn(async move {
                             if let Err(err) = http1::Builder::new()
                                 .serve_connection(
                                     io,
                                     service_fn(move |req| {
+                                        let retry_config_inner = Arc::clone(&retry_config_clone);
                                         handle_webhook(
                                             req,
                                             path_clone.clone(),
                                             shell_command_clone.clone(),
                                             handler_name_clone.clone(),
                                             timeout,
+                                            retry_config_inner,
                                         )
                                     }),
                                 )
@@ -72,7 +81,7 @@ pub async fn webhook_listener(
             }
         }
     }
-    
+
     info!("Webhook handler '{}' shutting down", handler_name);
     Ok(())
 }
@@ -84,6 +93,7 @@ async fn handle_webhook(
     shell_command: String,
     handler_name: String,
     timeout: u64,
+    retry_config: Arc<RetryConfig>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if req.uri().path() == path {
         // Process the webhook request
@@ -94,7 +104,14 @@ async fn handle_webhook(
         let context = format!("Method: {}, URI: {}", method, uri);
 
         // Execute the configured shell command
-        execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout).await;
+        execute_shell_command_with_context(
+            &shell_command,
+            &handler_name,
+            &context,
+            timeout,
+            &retry_config,
+        )
+        .await;
 
         Ok(Response::new(Full::new(Bytes::from("Webhook received"))))
     } else {

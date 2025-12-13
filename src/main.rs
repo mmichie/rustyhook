@@ -23,29 +23,27 @@ async fn main() {
 
     let config_path = get_config_path();
     let config = load_app_config(&config_path);
-    
+
     // Create shutdown channel
     let (shutdown_tx, _) = broadcast::channel(1);
-    
+
     let all_futures = initialize_handlers(&config, shutdown_tx.clone());
 
     if all_futures.is_empty() {
         info!("No handlers were initialized.");
     } else {
         info!("All handlers initialized, starting execution.");
-        
+
         // Spawn handlers
-        let handler_handle = tokio::spawn(async move {
-            join_all(all_futures).await
-        });
-        
+        let handler_handle = tokio::spawn(async move { join_all(all_futures).await });
+
         // Wait for shutdown signal
         match signal::ctrl_c().await {
             Ok(()) => {
                 info!("Received shutdown signal, stopping handlers...");
                 // Send shutdown signal to all handlers
                 let _ = shutdown_tx.send(());
-                
+
                 // Wait for handlers to complete with timeout
                 tokio::select! {
                     _ = handler_handle => {
@@ -92,18 +90,27 @@ fn load_app_config(config_path: &str) -> config::Config {
     })
 }
 
-fn initialize_handlers(config: &config::Config, shutdown_tx: broadcast::Sender<()>) -> Vec<JoinHandle<()>> {
+fn initialize_handlers(
+    config: &config::Config,
+    shutdown_tx: broadcast::Sender<()>,
+) -> Vec<JoinHandle<()>> {
     let mut all_futures = Vec::new();
     for handler_config in &config.handlers {
         match handler_config.event_type {
-            EventType::Sqs => initialize_sqs_handler(handler_config, &mut all_futures, shutdown_tx.clone()),
-            EventType::Webhook => initialize_webhook_handler(handler_config, &mut all_futures, shutdown_tx.clone()),
+            EventType::Sqs => {
+                initialize_sqs_handler(handler_config, &mut all_futures, shutdown_tx.clone())
+            }
+            EventType::Webhook => {
+                initialize_webhook_handler(handler_config, &mut all_futures, shutdown_tx.clone())
+            }
             EventType::Filesystem => {
                 initialize_filesystem_handler(handler_config, &mut all_futures, shutdown_tx.clone())
             }
             EventType::WebPolling => warn!("WebPolling is not yet implemented"),
             EventType::Cron => {
-                if let Ok(cron_future) = cron_handler::initialize_cron_handler(handler_config, shutdown_tx.clone()) {
+                if let Ok(cron_future) =
+                    cron_handler::initialize_cron_handler(handler_config, shutdown_tx.clone())
+                {
                     all_futures.push(cron_future);
                 } else {
                     error!(
@@ -131,13 +138,22 @@ fn initialize_sqs_handler(
         let shell_command = handler_config.shell.clone();
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
+        let retry_config = handler_config.retry.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let sqs_future: JoinHandle<()> = tokio::spawn(async move {
-            sqs_handler::sqs_poller(queue_url, poll_interval, shell_command, handler_name, timeout, shutdown_rx)
-                .await
-                .unwrap_or_else(|e| {
-                    error!("SQS handler error: {:?}", e);
-                });
+            sqs_handler::sqs_poller(
+                queue_url,
+                poll_interval,
+                shell_command,
+                handler_name,
+                timeout,
+                retry_config,
+                shutdown_rx,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                error!("SQS handler error: {:?}", e);
+            });
         });
         all_futures.push(sqs_future);
     }
@@ -156,13 +172,22 @@ fn initialize_webhook_handler(
         let shell_command = handler_config.shell.clone();
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
+        let retry_config = handler_config.retry.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let webhook_future = tokio::spawn(async move {
-            webhook_handler::webhook_listener(port, path, shell_command, handler_name, timeout, shutdown_rx)
-                .await
-                .unwrap_or_else(|e| {
-                    error!("Webhook handler error: {:?}", e);
-                });
+            webhook_handler::webhook_listener(
+                port,
+                path,
+                shell_command,
+                handler_name,
+                timeout,
+                retry_config,
+                shutdown_rx,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                error!("Webhook handler error: {:?}", e);
+            });
         });
         all_futures.push(webhook_future);
     }
@@ -178,13 +203,21 @@ fn initialize_filesystem_handler(
         let shell_command = handler_config.shell.clone();
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
+        let retry_config = handler_config.retry.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let filesystem_future = tokio::spawn(async move {
-            filesystem_handler::filesystem_watcher(path, shell_command, handler_name, timeout, shutdown_rx)
-                .await
-                .unwrap_or_else(|e| {
-                    error!("Filesystem handler error: {:?}", e);
-                });
+            filesystem_handler::filesystem_watcher(
+                path,
+                shell_command,
+                handler_name,
+                timeout,
+                retry_config,
+                shutdown_rx,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                error!("Filesystem handler error: {:?}", e);
+            });
         });
         all_futures.push(filesystem_future);
     }

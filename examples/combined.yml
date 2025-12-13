@@ -8,6 +8,11 @@ handlers:
       poll_interval: 30
     shell: "cd /path/to/git/repo && git pull origin master && docker-compose restart"
     timeout: 600  # 10 minutes for deployment operations
+    retry:
+      max_retries: 3
+      delay_ms: 5000        # Start with 5 second delay
+      backoff_multiplier: 2.0
+      max_delay_ms: 60000   # Cap at 1 minute between retries
   - type: Webhook
     name: Webhook Listener
     options:
@@ -16,6 +21,7 @@ handlers:
       path: "/webhook"
     shell: "echo 'Webhook received!'"
     timeout: 30  # Quick webhook processing
+    # No retry config - commands won't be retried on failure
   - type: Filesystem
     name: Filesystem Change Handler
     options:
@@ -24,3 +30,8 @@ handlers:
       event_type: "create" # or "write" for modifications
     shell: "echo 'Filesystem change detected!' && some_script.sh"
     # timeout not specified - uses default of 300 seconds
+    retry:
+      max_retries: 2
+      delay_ms: 1000        # 1 second initial delay
+      # backoff_multiplier defaults to 2.0
+      # max_delay_ms defaults to 60000
