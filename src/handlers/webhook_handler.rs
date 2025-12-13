@@ -86,6 +86,12 @@ pub async fn webhook_listener(
     Ok(())
 }
 
+/// Get the expected path for a handler (useful for testing)
+#[cfg(test)]
+pub fn get_expected_path(path: &str) -> String {
+    path.to_string()
+}
+
 // Function to handle incoming webhooks
 async fn handle_webhook(
     req: Request<hyper::body::Incoming>,
@@ -120,5 +126,200 @@ async fn handle_webhook(
             .status(StatusCode::NOT_FOUND)
             .body(Full::new(Bytes::from("Not Found")))
             .unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::RetryConfig;
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    /// Find an available port for testing
+    async fn find_available_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
+    }
+
+    #[tokio::test]
+    async fn test_webhook_valid_path_returns_200() {
+        let port = find_available_port().await;
+        let path = "/webhook".to_string();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            path.clone(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            shutdown_rx,
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        // Make HTTP request to valid path
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/webhook", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "Webhook received");
+
+        // Shutdown
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_invalid_path_returns_404() {
+        let port = find_available_port().await;
+        let path = "/webhook".to_string();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            path.clone(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            shutdown_rx,
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        // Make HTTP request to invalid path
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/invalid", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 404);
+        assert_eq!(response.text().await.unwrap(), "Not Found");
+
+        // Shutdown
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_shutdown() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/test".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            shutdown_rx,
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        // Send shutdown signal
+        let _ = shutdown_tx.send(());
+
+        // Handler should complete within timeout
+        let result = tokio::time::timeout(Duration::from_secs(2), handler).await;
+        assert!(result.is_ok(), "Handler should shut down within timeout");
+    }
+
+    #[tokio::test]
+    async fn test_webhook_multiple_requests() {
+        let port = find_available_port().await;
+        let path = "/api/hook".to_string();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            path.clone(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            shutdown_rx,
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+
+        // Send multiple requests
+        for i in 0..3 {
+            let response = client
+                .get(format!("http://127.0.0.1:{}/api/hook", port))
+                .send()
+                .await
+                .expect(&format!("Failed to send request {}", i));
+
+            assert_eq!(response.status(), 200);
+        }
+
+        // Shutdown
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_post_request() {
+        let port = find_available_port().await;
+        let path = "/webhook".to_string();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            path.clone(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            shutdown_rx,
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        // Make POST request
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/webhook", port))
+            .body("test payload")
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 200);
+
+        // Shutdown
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[test]
+    fn test_get_expected_path() {
+        assert_eq!(get_expected_path("/webhook"), "/webhook");
+        assert_eq!(get_expected_path("/api/v1/hook"), "/api/v1/hook");
     }
 }

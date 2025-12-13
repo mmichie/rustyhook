@@ -17,6 +17,7 @@ impl CommandResult {
         matches!(self, CommandResult::Success)
     }
 
+    #[allow(dead_code)]
     pub fn is_retriable(&self) -> bool {
         // Success is not retriable, everything else is
         !self.is_success()
