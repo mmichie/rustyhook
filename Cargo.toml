@@ -21,7 +21,7 @@ serde_yaml = "0.9"
 shiplift = "0.7.0"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3.31"
-notify = { version = "8.0.0", default-features = false, features = ["macos_kqueue"] }
+notify = "8.0.0"
 cron = "0.15.0"
 chrono = "0.4.41"
 
