@@ -1,5 +1,6 @@
 ---
 handlers:
+  # Basic filesystem handler - watches all files
   - type: Filesystem
     name: Filesystem Change Handler
     options:
@@ -7,4 +8,36 @@ handlers:
       path: "/Users/mim/tmp"
       event_type: "create" # or "write" for modifications
     shell: "echo 'Filesystem change detected!' && some_script.sh"
+
+  # Filtered handler - only watches specific file types
+  - type: Filesystem
+    name: Rust File Watcher
+    options:
+      type: Filesystem
+      path: "/Users/mim/projects/myapp"
+      debounce_ms: 200
+      # Only process these patterns (glob syntax)
+      include:
+        - "**/*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      # Exclude these patterns (takes precedence over include)
+      exclude:
+        - "target/**"
+        - "**/*.bak"
+    shell: "cargo check"
+
+  # Handler with only exclusions - watches everything except specified patterns
+  - type: Filesystem
+    name: Node Project Watcher
+    options:
+      type: Filesystem
+      path: "/Users/mim/projects/webapp"
+      debounce_ms: 500
+      exclude:
+        - "node_modules/**"
+        - "dist/**"
+        - "*.log"
+        - ".git/**"
+    shell: "npm run build"
 

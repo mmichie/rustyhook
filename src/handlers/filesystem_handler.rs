@@ -2,6 +2,7 @@ use crate::command_executor::execute_shell_command_with_context;
 use crate::config::RetryConfig;
 use crate::event::Event;
 use crate::event_bus::EventBus;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use log::{debug, error, info, warn};
 use notify::{event::EventKind, RecursiveMode, Watcher};
 use std::collections::HashMap;
@@ -17,6 +18,27 @@ struct PendingEvent {
     paths: Vec<PathBuf>,
 }
 
+/// Builds a GlobSet from a list of glob patterns
+fn build_globset(patterns: &[String]) -> Result<GlobSet, globset::Error> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(Glob::new(pattern)?);
+    }
+    builder.build()
+}
+
+/// Checks if a path should be processed based on include/exclude patterns
+fn should_process_path(path: &Path, include_set: &GlobSet, exclude_set: &GlobSet) -> bool {
+    // If the path matches any exclude pattern, skip it
+    if exclude_set.is_match(path) {
+        return false;
+    }
+
+    // If include patterns are specified, the path must match at least one
+    // If no include patterns, process all paths (that aren't excluded)
+    include_set.is_empty() || include_set.is_match(path)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn filesystem_watcher(
     path: String,
@@ -29,11 +51,26 @@ pub async fn filesystem_watcher(
     mut event_rx: mpsc::UnboundedReceiver<Event>,
     forward_to: Vec<String>,
     debounce_ms: u64,
+    include_patterns: Vec<String>,
+    exclude_patterns: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!(
         "Initializing filesystem watcher for path: {} (debounce: {}ms)",
         path, debounce_ms
     );
+
+    // Build glob sets for include/exclude patterns
+    let include_set =
+        build_globset(&include_patterns).map_err(|e| format!("Invalid include pattern: {}", e))?;
+    let exclude_set =
+        build_globset(&exclude_patterns).map_err(|e| format!("Invalid exclude pattern: {}", e))?;
+
+    if !include_patterns.is_empty() {
+        info!("Include patterns: {:?}", include_patterns);
+    }
+    if !exclude_patterns.is_empty() {
+        info!("Exclude patterns: {:?}", exclude_patterns);
+    }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(move |res| {
@@ -78,21 +115,30 @@ pub async fn filesystem_watcher(
                                 EventKind::Remove(_) => "Remove",
                                 _ => "Other",
                             };
-                            debug!("{} event queued for {:?}", event_type, event.paths);
 
-                            // Add or update pending events for each path
+                            // Add or update pending events for each path that passes filtering
+                            let mut queued_count = 0;
                             for path in &event.paths {
+                                if !should_process_path(path, &include_set, &exclude_set) {
+                                    debug!("Skipping path (filtered): {:?}", path);
+                                    continue;
+                                }
+
                                 pending_events.insert(
                                     path.clone(),
                                     PendingEvent {
-                                        kind: event.kind.clone(),
+                                        kind: event.kind,
                                         paths: vec![path.clone()],
                                     },
                                 );
+                                queued_count += 1;
                             }
 
-                            // Reset debounce timer
-                            debounce_timer = Some(tokio::time::Instant::now() + debounce_duration);
+                            if queued_count > 0 {
+                                debug!("{} event queued for {} path(s)", event_type, queued_count);
+                                // Reset debounce timer only if we actually queued something
+                                debounce_timer = Some(tokio::time::Instant::now() + debounce_duration);
+                            }
                         } else {
                             debug!("Other event detected: {:?}", event.kind);
                         }
@@ -185,4 +231,258 @@ pub async fn filesystem_watcher(
 
     info!("Filesystem handler '{}' shutting down", handler_name);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_build_globset_empty() {
+        let patterns: Vec<String> = vec![];
+        let globset = build_globset(&patterns).expect("Should build empty globset");
+        assert!(globset.is_empty());
+    }
+
+    #[test]
+    fn test_build_globset_single_pattern() {
+        let patterns = vec!["*.rs".to_string()];
+        let globset = build_globset(&patterns).expect("Should build globset");
+        assert!(!globset.is_empty());
+        assert!(globset.is_match("main.rs"));
+        assert!(globset.is_match("lib.rs"));
+        assert!(!globset.is_match("main.txt"));
+    }
+
+    #[test]
+    fn test_build_globset_multiple_patterns() {
+        let patterns = vec!["*.rs".to_string(), "*.toml".to_string()];
+        let globset = build_globset(&patterns).expect("Should build globset");
+        assert!(globset.is_match("main.rs"));
+        assert!(globset.is_match("Cargo.toml"));
+        assert!(!globset.is_match("main.txt"));
+    }
+
+    #[test]
+    fn test_build_globset_recursive_pattern() {
+        let patterns = vec!["**/*.rs".to_string()];
+        let globset = build_globset(&patterns).expect("Should build globset");
+        assert!(globset.is_match("main.rs"));
+        assert!(globset.is_match("src/lib.rs"));
+        assert!(globset.is_match("src/handlers/mod.rs"));
+        assert!(!globset.is_match("src/handlers/mod.txt"));
+    }
+
+    #[test]
+    fn test_build_globset_invalid_pattern() {
+        let patterns = vec!["[invalid".to_string()];
+        let result = build_globset(&patterns);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_should_process_path_no_filters() {
+        let include = build_globset(&[]).unwrap();
+        let exclude = build_globset(&[]).unwrap();
+
+        // Without any filters, all paths should be processed
+        assert!(should_process_path(
+            Path::new("main.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(
+            Path::new("file.txt"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(
+            Path::new("target/debug/main"),
+            &include,
+            &exclude
+        ));
+    }
+
+    #[test]
+    fn test_should_process_path_include_only() {
+        let include = build_globset(&["*.rs".to_string()]).unwrap();
+        let exclude = build_globset(&[]).unwrap();
+
+        // Only .rs files should be processed
+        assert!(should_process_path(
+            Path::new("main.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(Path::new("lib.rs"), &include, &exclude));
+        assert!(!should_process_path(
+            Path::new("file.txt"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("Cargo.toml"),
+            &include,
+            &exclude
+        ));
+    }
+
+    #[test]
+    fn test_should_process_path_exclude_only() {
+        let include = build_globset(&[]).unwrap();
+        let exclude = build_globset(&["*.tmp".to_string()]).unwrap();
+
+        // All files except .tmp should be processed
+        assert!(should_process_path(
+            Path::new("main.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(
+            Path::new("file.txt"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("backup.tmp"),
+            &include,
+            &exclude
+        ));
+    }
+
+    #[test]
+    fn test_should_process_path_include_and_exclude() {
+        let include = build_globset(&["*.rs".to_string(), "*.toml".to_string()]).unwrap();
+        let exclude = build_globset(&["*.bak".to_string()]).unwrap();
+
+        // .rs and .toml files should be processed, but .bak should be excluded
+        assert!(should_process_path(
+            Path::new("main.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(
+            Path::new("Cargo.toml"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("file.txt"),
+            &include,
+            &exclude
+        )); // Not in include
+    }
+
+    #[test]
+    fn test_should_process_path_exclude_takes_precedence() {
+        let include = build_globset(&["*.rs".to_string()]).unwrap();
+        let exclude = build_globset(&["test_*.rs".to_string()]).unwrap();
+
+        // test_*.rs should be excluded even though it matches *.rs include
+        assert!(should_process_path(
+            Path::new("main.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(Path::new("lib.rs"), &include, &exclude));
+        assert!(!should_process_path(
+            Path::new("test_main.rs"),
+            &include,
+            &exclude
+        ));
+    }
+
+    #[test]
+    fn test_should_process_path_recursive_exclude() {
+        let include = build_globset(&[]).unwrap();
+        let exclude = build_globset(&["target/**".to_string()]).unwrap();
+
+        // Files in target directory should be excluded
+        assert!(should_process_path(
+            Path::new("main.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(
+            Path::new("src/lib.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("target/debug/main"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("target/release/main"),
+            &include,
+            &exclude
+        ));
+    }
+
+    #[test]
+    fn test_should_process_path_multiple_excludes() {
+        let include = build_globset(&[]).unwrap();
+        let exclude = build_globset(&[
+            "target/**".to_string(),
+            "node_modules/**".to_string(),
+            "*.tmp".to_string(),
+        ])
+        .unwrap();
+
+        assert!(should_process_path(
+            Path::new("main.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("target/debug/main"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("node_modules/pkg/index.js"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("backup.tmp"),
+            &include,
+            &exclude
+        ));
+    }
+
+    #[test]
+    fn test_should_process_path_typical_rust_project() {
+        // Typical patterns for watching a Rust project
+        let include = build_globset(&["**/*.rs".to_string(), "Cargo.toml".to_string()]).unwrap();
+        let exclude = build_globset(&["target/**".to_string()]).unwrap();
+
+        assert!(should_process_path(
+            Path::new("src/main.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(
+            Path::new("src/handlers/mod.rs"),
+            &include,
+            &exclude
+        ));
+        assert!(should_process_path(
+            Path::new("Cargo.toml"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("target/debug/rustyhook"),
+            &include,
+            &exclude
+        ));
+        assert!(!should_process_path(
+            Path::new("README.md"),
+            &include,
+            &exclude
+        ));
+    }
 }

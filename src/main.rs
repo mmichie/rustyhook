@@ -273,6 +273,8 @@ fn initialize_filesystem_handler(
 ) {
     if let Some(path) = handler_config.options.path.clone() {
         let debounce_ms = handler_config.options.debounce_ms;
+        let include_patterns = handler_config.options.include.clone();
+        let exclude_patterns = handler_config.options.exclude.clone();
         info!(
             "Initializing Filesystem handler for path: {} (debounce: {}ms)",
             path, debounce_ms
@@ -295,6 +297,8 @@ fn initialize_filesystem_handler(
                 event_rx,
                 forward_to,
                 debounce_ms,
+                include_patterns,
+                exclude_patterns,
             )
             .await
             .unwrap_or_else(|e| {

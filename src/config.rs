@@ -90,6 +90,14 @@ pub struct Options {
     /// Debounce duration in milliseconds for filesystem events (default: 100ms)
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
+    /// Glob patterns to include (e.g., ["*.rs", "src/**/*.toml"])
+    /// If specified, only files matching at least one pattern are processed
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Glob patterns to exclude (e.g., ["*.tmp", "target/**"])
+    /// Files matching any exclude pattern are ignored, even if they match include patterns
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 fn default_debounce_ms() -> u64 {
@@ -1024,5 +1032,113 @@ handlers:
         let handler = &config.handlers[0];
         // Value is stored but only meaningful for Filesystem handlers
         assert_eq!(handler.options.debounce_ms, 200);
+    }
+
+    // ============== include/exclude pattern tests ==============
+
+    #[test]
+    fn test_default_include_exclude_empty() {
+        let yaml = r#"
+handlers:
+  - type: Filesystem
+    name: test-fs
+    options:
+      type: filesystem
+      path: /tmp/watch
+    shell: echo "file changed"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let handler = &config.handlers[0];
+        assert!(handler.options.include.is_empty());
+        assert!(handler.options.exclude.is_empty());
+    }
+
+    #[test]
+    fn test_include_patterns() {
+        let yaml = r#"
+handlers:
+  - type: Filesystem
+    name: test-fs
+    options:
+      type: filesystem
+      path: /tmp/watch
+      include:
+        - "*.rs"
+        - "*.toml"
+        - "src/**/*.ts"
+    shell: echo "file changed"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let handler = &config.handlers[0];
+        assert_eq!(
+            handler.options.include,
+            vec!["*.rs", "*.toml", "src/**/*.ts"]
+        );
+        assert!(handler.options.exclude.is_empty());
+    }
+
+    #[test]
+    fn test_exclude_patterns() {
+        let yaml = r#"
+handlers:
+  - type: Filesystem
+    name: test-fs
+    options:
+      type: filesystem
+      path: /tmp/watch
+      exclude:
+        - "*.tmp"
+        - "target/**"
+        - "node_modules/**"
+    shell: echo "file changed"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let handler = &config.handlers[0];
+        assert!(handler.options.include.is_empty());
+        assert_eq!(
+            handler.options.exclude,
+            vec!["*.tmp", "target/**", "node_modules/**"]
+        );
+    }
+
+    #[test]
+    fn test_include_and_exclude_patterns() {
+        let yaml = r#"
+handlers:
+  - type: Filesystem
+    name: test-fs
+    options:
+      type: filesystem
+      path: /tmp/watch
+      include:
+        - "*.rs"
+        - "*.toml"
+      exclude:
+        - "*.bak"
+        - "target/**"
+    shell: echo "file changed"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let handler = &config.handlers[0];
+        assert_eq!(handler.options.include, vec!["*.rs", "*.toml"]);
+        assert_eq!(handler.options.exclude, vec!["*.bak", "target/**"]);
+    }
+
+    #[test]
+    fn test_single_include_pattern() {
+        let yaml = r#"
+handlers:
+  - type: Filesystem
+    name: test-fs
+    options:
+      type: filesystem
+      path: /tmp/watch
+      include:
+        - "**/*.rs"
+    shell: echo "file changed"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let handler = &config.handlers[0];
+        assert_eq!(handler.options.include, vec!["**/*.rs"]);
     }
 }
