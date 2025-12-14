@@ -78,6 +78,10 @@ pub struct HandlerConfig {
     /// Defaults to $SHELL environment variable or "sh" if not set
     #[serde(default, rename = "shell_program")]
     pub shell_program: ShellConfig,
+    /// Working directory for command execution
+    /// If not specified, commands run in the current working directory
+    #[serde(default)]
+    pub working_dir: Option<String>,
 }
 
 fn default_timeout() -> u64 {

@@ -23,6 +23,7 @@ struct WebhookState {
     timeout: u64,
     retry_config: Arc<RetryConfig>,
     shell_config: ShellConfig,
+    working_dir: Option<String>,
     event_bus: Arc<EventBus>,
     forward_to: Vec<String>,
 }
@@ -37,6 +38,7 @@ pub async fn webhook_listener(
     timeout: u64,
     retry_config: RetryConfig,
     shell_config: ShellConfig,
+    working_dir: Option<String>,
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
@@ -62,6 +64,7 @@ pub async fn webhook_listener(
         timeout,
         retry_config: Arc::new(retry_config),
         shell_config,
+        working_dir,
         event_bus: event_bus.clone(),
         forward_to: forward_to.clone(),
     });
@@ -107,6 +110,7 @@ pub async fn webhook_listener(
                     state.timeout,
                     &state.retry_config,
                     &state.shell_config,
+                    state.working_dir.as_deref(),
                 ).await;
 
                 // Forward to next handlers if configured
@@ -156,6 +160,7 @@ async fn handle_webhook(
             state.timeout,
             &state.retry_config,
             &state.shell_config,
+            state.working_dir.as_deref(),
         )
         .await;
 
@@ -228,6 +233,7 @@ mod tests {
             30,
             RetryConfig::default(),
             ShellConfig::Simple("sh".to_string()),
+            None,
             shutdown_rx,
             event_bus,
             event_rx,
@@ -269,6 +275,7 @@ mod tests {
             30,
             RetryConfig::default(),
             ShellConfig::Simple("sh".to_string()),
+            None,
             shutdown_rx,
             event_bus,
             event_rx,
@@ -309,6 +316,7 @@ mod tests {
             30,
             RetryConfig::default(),
             ShellConfig::Simple("sh".to_string()),
+            None,
             shutdown_rx,
             event_bus,
             event_rx,
@@ -342,6 +350,7 @@ mod tests {
             30,
             RetryConfig::default(),
             ShellConfig::Simple("sh".to_string()),
+            None,
             shutdown_rx,
             event_bus,
             event_rx,
@@ -385,6 +394,7 @@ mod tests {
             30,
             RetryConfig::default(),
             ShellConfig::Simple("sh".to_string()),
+            None,
             shutdown_rx,
             event_bus,
             event_rx,

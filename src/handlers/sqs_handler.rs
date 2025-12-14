@@ -21,6 +21,7 @@ pub async fn sqs_poller(
     timeout: u64,
     retry_config: RetryConfig,
     shell_config: ShellConfig,
+    working_dir: Option<String>,
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
@@ -52,7 +53,7 @@ pub async fn sqs_poller(
                     Some(messages) if !messages.is_empty() => {
                         info!("Received {} messages", messages.len());
                         for message in messages {
-                            process_message(&message, &shell_command, &handler_name, timeout, &retry_config, &shell_config).await;
+                            process_message(&message, &shell_command, &handler_name, timeout, &retry_config, &shell_config, working_dir.as_deref()).await;
                             delete_message(&client, &queue_url, &message).await;
 
                             // Forward event if configured
@@ -99,6 +100,7 @@ pub async fn sqs_poller(
                     timeout,
                     &retry_config,
                     &shell_config,
+                    working_dir.as_deref(),
                 ).await;
 
                 // Forward to next handlers if configured
@@ -148,6 +150,7 @@ async fn process_message(
     timeout: u64,
     retry_config: &RetryConfig,
     shell_config: &ShellConfig,
+    working_dir: Option<&str>,
 ) {
     info!("Processing message: {:?}", message);
 
@@ -162,6 +165,7 @@ async fn process_message(
         timeout,
         retry_config,
         shell_config,
+        working_dir,
     )
     .await;
 }

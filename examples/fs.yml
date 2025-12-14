@@ -31,6 +31,9 @@ handlers:
     # Supported: sh, bash, zsh, fish, dash, ksh (Unix), powershell, pwsh, cmd (Windows)
     # Default: $SHELL environment variable, or "sh" if not set
     shell_program: bash
+    # Optional: specify working directory for command execution
+    # Commands will run from this directory. If not specified, uses current directory.
+    working_dir: "/Users/mim/projects/myapp"
 
   # Handler with only exclusions - watches everything except specified patterns
   - type: Filesystem

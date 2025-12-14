@@ -28,6 +28,7 @@ pub fn create_cron_handler(
     timeout: u64,
     retry_config: RetryConfig,
     shell_config: ShellConfig,
+    working_dir: Option<String>,
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
@@ -54,7 +55,7 @@ pub fn create_cron_handler(
                     tokio::select! {
                         _ = sleep(std_duration) => {
                             info!("Executing cron task '{}' at {:?}", handler_name, Utc::now());
-                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config, &shell_config).await;
+                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config, &shell_config, working_dir.as_deref()).await;
 
                             // Forward event if configured
                             if !forward_to.is_empty() {
@@ -75,7 +76,7 @@ pub fn create_cron_handler(
                                 "Cron handler '{}' received forwarded event from '{}'",
                                 handler_name, forwarded_event.source_handler
                             );
-                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config, &shell_config).await;
+                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config, &shell_config, working_dir.as_deref()).await;
 
                             // Forward to next handlers if configured
                             if !forward_to.is_empty() {
@@ -154,6 +155,7 @@ mod tests {
             30,
             RetryConfig::default(),
             ShellConfig::Simple("sh".to_string()),
+            None,
             shutdown_rx,
             event_bus,
             event_rx,
@@ -175,6 +177,7 @@ mod tests {
             30,
             RetryConfig::default(),
             ShellConfig::Simple("sh".to_string()),
+            None,
             shutdown_rx,
             event_bus,
             event_rx,
@@ -199,6 +202,7 @@ mod tests {
             30,
             RetryConfig::default(),
             ShellConfig::Simple("sh".to_string()),
+            None,
             shutdown_rx,
             event_bus,
             event_rx,

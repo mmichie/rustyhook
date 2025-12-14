@@ -47,6 +47,7 @@ pub async fn filesystem_watcher(
     timeout: u64,
     retry_config: RetryConfig,
     shell_config: ShellConfig,
+    working_dir: Option<String>,
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
@@ -154,7 +155,7 @@ pub async fn filesystem_watcher(
                     handler_name, forwarded_event.source_handler
                 );
                 let context = format!("Forwarded from: {}", forwarded_event.source_handler);
-                execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config, &shell_config).await;
+                execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config, &shell_config, working_dir.as_deref()).await;
 
                 // Forward to next handlers if configured
                 if !forward_to.is_empty() {
@@ -197,7 +198,7 @@ pub async fn filesystem_watcher(
                         event_count, paths, event_kinds
                     );
 
-                    execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config, &shell_config).await;
+                    execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config, &shell_config, working_dir.as_deref()).await;
 
                     // Forward consolidated event if configured
                     if !forward_to.is_empty() {

@@ -8,3 +8,15 @@ handlers:
       path: "/webhook"
     shell: "echo 'Webhook received!'"
 
+  # Webhook that triggers a git pull and build
+  - type: Webhook
+    name: Deploy Webhook
+    options:
+      type: Webhook
+      port: 8080
+      path: "/deploy"
+    shell: "git pull && npm run build"
+    # Optional: specify working directory for command execution
+    # Commands will run from this directory
+    working_dir: "/var/www/myapp"
+

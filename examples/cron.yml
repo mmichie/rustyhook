@@ -7,3 +7,13 @@ handlers:
       cron_expression: "*/5 * * * *"  # Every 5 minutes
     shell: "echo 'Cron job executed at $(date)'"
     timeout: 60  # Command timeout in seconds (optional, defaults to 300)
+
+  # Cron with working directory - runs backup script from specific directory
+  - type: Cron
+    name: Daily Backup
+    options:
+      type: Cron
+      cron_expression: "0 0 2 * * *"  # Daily at 2 AM
+    shell: "./backup.sh"
+    # Optional: specify working directory for command execution
+    working_dir: "/opt/backup/scripts"
