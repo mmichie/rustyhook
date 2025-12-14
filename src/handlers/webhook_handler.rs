@@ -1,19 +1,33 @@
 use crate::command_executor::execute_shell_command_with_context;
 use crate::config::RetryConfig;
+use crate::event::Event;
+use crate::event_bus::EventBus;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
+
+/// Shared state for webhook request handling
+struct WebhookState {
+    path: String,
+    shell_command: String,
+    handler_name: String,
+    timeout: u64,
+    retry_config: Arc<RetryConfig>,
+    event_bus: Arc<EventBus>,
+    forward_to: Vec<String>,
+}
 
 // Function to start the webhook listener
+#[allow(clippy::too_many_arguments)]
 pub async fn webhook_listener(
     port: u16,
     path: String,
@@ -22,6 +36,9 @@ pub async fn webhook_listener(
     timeout: u64,
     retry_config: RetryConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
+    event_bus: Arc<EventBus>,
+    mut event_rx: mpsc::UnboundedReceiver<Event>,
+    forward_to: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener: TcpListener = match TcpListener::bind(&addr).await {
@@ -35,8 +52,16 @@ pub async fn webhook_listener(
         }
     };
 
-    // Wrap retry_config in Arc for sharing across spawned tasks
-    let retry_config = Arc::new(retry_config);
+    // Create shared state for request handlers
+    let state = Arc::new(WebhookState {
+        path,
+        shell_command,
+        handler_name: handler_name.clone(),
+        timeout,
+        retry_config: Arc::new(retry_config),
+        event_bus: event_bus.clone(),
+        forward_to: forward_to.clone(),
+    });
 
     loop {
         tokio::select! {
@@ -44,24 +69,14 @@ pub async fn webhook_listener(
                 match result {
                     Ok((stream, _)) => {
                         let io = TokioIo::new(stream);
-                        let path_clone = path.clone();
-                        let shell_command_clone = shell_command.clone();
-                        let handler_name_clone = handler_name.clone();
-                        let retry_config_clone = Arc::clone(&retry_config);
+                        let state_clone = Arc::clone(&state);
                         tokio::task::spawn(async move {
                             if let Err(err) = http1::Builder::new()
                                 .serve_connection(
                                     io,
                                     service_fn(move |req| {
-                                        let retry_config_inner = Arc::clone(&retry_config_clone);
-                                        handle_webhook(
-                                            req,
-                                            path_clone.clone(),
-                                            shell_command_clone.clone(),
-                                            handler_name_clone.clone(),
-                                            timeout,
-                                            retry_config_inner,
-                                        )
+                                        let state_inner = Arc::clone(&state_clone);
+                                        handle_webhook(req, state_inner)
                                     }),
                                 )
                                 .await
@@ -72,6 +87,30 @@ pub async fn webhook_listener(
                     }
                     Err(e) => {
                         error!("Error accepting connection: {}", e);
+                    }
+                }
+            }
+            Some(forwarded_event) = event_rx.recv() => {
+                // Handle forwarded events from other handlers
+                info!(
+                    "Webhook handler '{}' received forwarded event from '{}'",
+                    handler_name, forwarded_event.source_handler
+                );
+                let context = format!("Forwarded from: {}", forwarded_event.source_handler);
+                execute_shell_command_with_context(
+                    &state.shell_command,
+                    &handler_name,
+                    &context,
+                    state.timeout,
+                    &state.retry_config,
+                ).await;
+
+                // Forward to next handlers if configured
+                if !forward_to.is_empty() {
+                    for target in &forward_to {
+                        if let Err(e) = event_bus.send(target, forwarded_event.clone()) {
+                            warn!("Failed to forward event to '{}': {}", target, e);
+                        }
                     }
                 }
             }
@@ -95,15 +134,11 @@ pub fn get_expected_path(path: &str) -> String {
 // Function to handle incoming webhooks
 async fn handle_webhook(
     req: Request<hyper::body::Incoming>,
-    path: String,
-    shell_command: String,
-    handler_name: String,
-    timeout: u64,
-    retry_config: Arc<RetryConfig>,
+    state: Arc<WebhookState>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    if req.uri().path() == path {
+    if req.uri().path() == state.path {
         // Process the webhook request
-        info!("Webhook received at {}", path);
+        info!("Webhook received at {}", state.path);
 
         let method = req.method().to_string();
         let uri = req.uri().to_string();
@@ -111,13 +146,31 @@ async fn handle_webhook(
 
         // Execute the configured shell command
         execute_shell_command_with_context(
-            &shell_command,
-            &handler_name,
+            &state.shell_command,
+            &state.handler_name,
             &context,
-            timeout,
-            &retry_config,
+            state.timeout,
+            &state.retry_config,
         )
         .await;
+
+        // Forward event if configured
+        if !state.forward_to.is_empty() {
+            let event = Event::from_webhook(
+                &state.handler_name,
+                &method,
+                &uri,
+                "", // Body would require reading the incoming body
+            );
+
+            for target in &state.forward_to {
+                if let Err(e) = state.event_bus.send(target, event.clone()) {
+                    warn!("Failed to forward event to '{}': {}", target, e);
+                } else {
+                    debug!("Forwarded webhook event to '{}'", target);
+                }
+            }
+        }
 
         Ok(Response::new(Full::new(Bytes::from("Webhook received"))))
     } else {
@@ -134,6 +187,7 @@ mod tests {
     use super::*;
     use crate::config::RetryConfig;
     use std::time::Duration;
+    use tokio::sync::mpsc;
     use tokio::time::sleep;
 
     /// Find an available port for testing
@@ -144,12 +198,22 @@ mod tests {
         port
     }
 
+    /// Helper to create test dependencies
+    fn create_test_deps() -> (Arc<EventBus>, mpsc::UnboundedReceiver<Event>) {
+        let event_bus = Arc::new(EventBus::new());
+        let (tx, rx) = mpsc::unbounded_channel();
+        // We don't register with the bus since we're just testing the handler
+        drop(tx);
+        (event_bus, rx)
+    }
+
     #[tokio::test]
     async fn test_webhook_valid_path_returns_200() {
         let port = find_available_port().await;
         let path = "/webhook".to_string();
         let (shutdown_tx, _) = broadcast::channel(1);
         let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
 
         let handler = tokio::spawn(webhook_listener(
             port,
@@ -159,6 +223,9 @@ mod tests {
             30,
             RetryConfig::default(),
             shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
         ));
 
         // Wait for server to start
@@ -186,6 +253,7 @@ mod tests {
         let path = "/webhook".to_string();
         let (shutdown_tx, _) = broadcast::channel(1);
         let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
 
         let handler = tokio::spawn(webhook_listener(
             port,
@@ -195,6 +263,9 @@ mod tests {
             30,
             RetryConfig::default(),
             shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
         ));
 
         // Wait for server to start
@@ -221,6 +292,7 @@ mod tests {
         let port = find_available_port().await;
         let (shutdown_tx, _) = broadcast::channel(1);
         let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
 
         let handler = tokio::spawn(webhook_listener(
             port,
@@ -230,6 +302,9 @@ mod tests {
             30,
             RetryConfig::default(),
             shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
         ));
 
         // Wait for server to start
@@ -249,6 +324,7 @@ mod tests {
         let path = "/api/hook".to_string();
         let (shutdown_tx, _) = broadcast::channel(1);
         let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
 
         let handler = tokio::spawn(webhook_listener(
             port,
@@ -258,6 +334,9 @@ mod tests {
             30,
             RetryConfig::default(),
             shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
         ));
 
         // Wait for server to start
@@ -287,6 +366,7 @@ mod tests {
         let path = "/webhook".to_string();
         let (shutdown_tx, _) = broadcast::channel(1);
         let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
 
         let handler = tokio::spawn(webhook_listener(
             port,
@@ -296,6 +376,9 @@ mod tests {
             30,
             RetryConfig::default(),
             shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
         ));
 
         // Wait for server to start

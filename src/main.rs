@@ -1,10 +1,14 @@
 mod command_executor;
 mod config;
+mod event;
+mod event_bus;
 use clap::{Arg, Command};
 use futures::future::join_all;
 use log::{error, info, warn};
+use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 mod handlers {
@@ -14,7 +18,9 @@ mod handlers {
     pub mod webhook_handler;
 }
 
-use crate::config::{load_config, EventType};
+use crate::config::{load_config, validate_config, EventType};
+use crate::event::Event;
+use crate::event_bus::EventBus;
 use crate::handlers::{cron_handler, filesystem_handler, sqs_handler, webhook_handler};
 
 #[tokio::main]
@@ -24,10 +30,49 @@ async fn main() {
     let config_path = get_config_path();
     let config = load_app_config(&config_path);
 
+    // Validate configuration (checks for unique names, valid forward_to targets, no cycles)
+    if let Err(errors) = validate_config(&config) {
+        for err in &errors {
+            error!("Configuration error: {}", err);
+        }
+        std::process::exit(1);
+    }
+    info!("Configuration validated successfully");
+
     // Create shutdown channel
     let (shutdown_tx, _) = broadcast::channel(1);
 
-    let all_futures = initialize_handlers(&config, shutdown_tx.clone());
+    // Create EventBus for inter-handler communication
+    let event_bus = Arc::new(EventBus::new());
+
+    // Register all handlers with the EventBus
+    let mut event_receivers: std::collections::HashMap<String, mpsc::UnboundedReceiver<Event>> =
+        std::collections::HashMap::new();
+    for handler_config in &config.handlers {
+        match event_bus.register(&handler_config.name) {
+            Ok(rx) => {
+                event_receivers.insert(handler_config.name.clone(), rx);
+            }
+            Err(e) => {
+                error!(
+                    "Failed to register handler '{}' with EventBus: {}",
+                    handler_config.name, e
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+    info!(
+        "Registered {} handlers with EventBus",
+        event_bus.handler_count()
+    );
+
+    let all_futures = initialize_handlers(
+        &config,
+        shutdown_tx.clone(),
+        event_bus.clone(),
+        event_receivers,
+    );
 
     if all_futures.is_empty() {
         info!("No handlers were initialized.");
@@ -93,32 +138,46 @@ fn load_app_config(config_path: &str) -> config::Config {
 fn initialize_handlers(
     config: &config::Config,
     shutdown_tx: broadcast::Sender<()>,
+    event_bus: Arc<EventBus>,
+    mut event_receivers: std::collections::HashMap<String, mpsc::UnboundedReceiver<Event>>,
 ) -> Vec<JoinHandle<()>> {
     let mut all_futures = Vec::new();
     for handler_config in &config.handlers {
+        // Get the event receiver for this handler
+        let event_rx = event_receivers
+            .remove(&handler_config.name)
+            .expect("Event receiver should exist for registered handler");
+
         match handler_config.event_type {
-            EventType::Sqs => {
-                initialize_sqs_handler(handler_config, &mut all_futures, shutdown_tx.clone())
-            }
-            EventType::Webhook => {
-                initialize_webhook_handler(handler_config, &mut all_futures, shutdown_tx.clone())
-            }
-            EventType::Filesystem => {
-                initialize_filesystem_handler(handler_config, &mut all_futures, shutdown_tx.clone())
-            }
+            EventType::Sqs => initialize_sqs_handler(
+                handler_config,
+                &mut all_futures,
+                shutdown_tx.clone(),
+                event_bus.clone(),
+                event_rx,
+            ),
+            EventType::Webhook => initialize_webhook_handler(
+                handler_config,
+                &mut all_futures,
+                shutdown_tx.clone(),
+                event_bus.clone(),
+                event_rx,
+            ),
+            EventType::Filesystem => initialize_filesystem_handler(
+                handler_config,
+                &mut all_futures,
+                shutdown_tx.clone(),
+                event_bus.clone(),
+                event_rx,
+            ),
             EventType::WebPolling => warn!("WebPolling is not yet implemented"),
-            EventType::Cron => {
-                if let Ok(cron_future) =
-                    cron_handler::initialize_cron_handler(handler_config, shutdown_tx.clone())
-                {
-                    all_futures.push(cron_future);
-                } else {
-                    error!(
-                        "Failed to initialize Cron handler for: {}",
-                        handler_config.name
-                    );
-                }
-            }
+            EventType::Cron => initialize_cron_handler(
+                handler_config,
+                &mut all_futures,
+                shutdown_tx.clone(),
+                event_bus.clone(),
+                event_rx,
+            ),
             EventType::Database => warn!("Database is not yet implemented"),
         }
     }
@@ -129,6 +188,8 @@ fn initialize_sqs_handler(
     handler_config: &config::HandlerConfig,
     all_futures: &mut Vec<JoinHandle<()>>,
     shutdown_tx: broadcast::Sender<()>,
+    event_bus: Arc<EventBus>,
+    event_rx: mpsc::UnboundedReceiver<Event>,
 ) {
     if let (Some(queue_url), Some(poll_interval)) = (
         handler_config.options.queue_url.clone(),
@@ -139,6 +200,7 @@ fn initialize_sqs_handler(
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
         let retry_config = handler_config.retry.clone();
+        let forward_to = handler_config.forward_to.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let sqs_future: JoinHandle<()> = tokio::spawn(async move {
             sqs_handler::sqs_poller(
@@ -149,6 +211,9 @@ fn initialize_sqs_handler(
                 timeout,
                 retry_config,
                 shutdown_rx,
+                event_bus,
+                event_rx,
+                forward_to,
             )
             .await
             .unwrap_or_else(|e| {
@@ -163,6 +228,8 @@ fn initialize_webhook_handler(
     handler_config: &config::HandlerConfig,
     all_futures: &mut Vec<JoinHandle<()>>,
     shutdown_tx: broadcast::Sender<()>,
+    event_bus: Arc<EventBus>,
+    event_rx: mpsc::UnboundedReceiver<Event>,
 ) {
     if let (Some(port), Some(path)) = (
         handler_config.options.port,
@@ -173,6 +240,7 @@ fn initialize_webhook_handler(
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
         let retry_config = handler_config.retry.clone();
+        let forward_to = handler_config.forward_to.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let webhook_future = tokio::spawn(async move {
             webhook_handler::webhook_listener(
@@ -183,6 +251,9 @@ fn initialize_webhook_handler(
                 timeout,
                 retry_config,
                 shutdown_rx,
+                event_bus,
+                event_rx,
+                forward_to,
             )
             .await
             .unwrap_or_else(|e| {
@@ -197,13 +268,20 @@ fn initialize_filesystem_handler(
     handler_config: &config::HandlerConfig,
     all_futures: &mut Vec<JoinHandle<()>>,
     shutdown_tx: broadcast::Sender<()>,
+    event_bus: Arc<EventBus>,
+    event_rx: mpsc::UnboundedReceiver<Event>,
 ) {
     if let Some(path) = handler_config.options.path.clone() {
-        info!("Initializing Filesystem handler for path: {}", path);
+        let debounce_ms = handler_config.options.debounce_ms;
+        info!(
+            "Initializing Filesystem handler for path: {} (debounce: {}ms)",
+            path, debounce_ms
+        );
         let shell_command = handler_config.shell.clone();
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
         let retry_config = handler_config.retry.clone();
+        let forward_to = handler_config.forward_to.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let filesystem_future = tokio::spawn(async move {
             filesystem_handler::filesystem_watcher(
@@ -213,6 +291,10 @@ fn initialize_filesystem_handler(
                 timeout,
                 retry_config,
                 shutdown_rx,
+                event_bus,
+                event_rx,
+                forward_to,
+                debounce_ms,
             )
             .await
             .unwrap_or_else(|e| {
@@ -220,5 +302,53 @@ fn initialize_filesystem_handler(
             });
         });
         all_futures.push(filesystem_future);
+    }
+}
+
+fn initialize_cron_handler(
+    handler_config: &config::HandlerConfig,
+    all_futures: &mut Vec<JoinHandle<()>>,
+    shutdown_tx: broadcast::Sender<()>,
+    event_bus: Arc<EventBus>,
+    event_rx: mpsc::UnboundedReceiver<Event>,
+) {
+    if let Some(cron_expression) = handler_config.options.cron_expression.clone() {
+        info!(
+            "Initializing Cron handler '{}' with expression: {}",
+            handler_config.name, cron_expression
+        );
+        let shell_command = handler_config.shell.clone();
+        let handler_name = handler_config.name.clone();
+        let timeout = handler_config.timeout;
+        let retry_config = handler_config.retry.clone();
+        let forward_to = handler_config.forward_to.clone();
+        let shutdown_rx = shutdown_tx.subscribe();
+
+        match cron_handler::create_cron_handler(
+            cron_expression,
+            shell_command,
+            handler_name.clone(),
+            timeout,
+            retry_config,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            forward_to,
+        ) {
+            Ok(cron_future) => {
+                all_futures.push(cron_future);
+            }
+            Err(e) => {
+                error!(
+                    "Failed to initialize Cron handler '{}': {}",
+                    handler_name, e
+                );
+            }
+        }
+    } else {
+        error!(
+            "Cron handler '{}' is missing cron_expression",
+            handler_config.name
+        );
     }
 }

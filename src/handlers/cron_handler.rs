@@ -1,11 +1,14 @@
 use crate::command_executor::execute_shell_command_with_retry;
-use crate::config::HandlerConfig;
+use crate::config::RetryConfig;
+use crate::event::Event;
+use crate::event_bus::EventBus;
 use chrono::Utc;
 use cron::Schedule;
-use log::{error, info};
+use log::{debug, error, info, warn};
 use std::error::Error;
 use std::str::FromStr;
-use tokio::sync::broadcast;
+use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
@@ -16,23 +19,20 @@ pub fn validate_cron_expression(expression: &str) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-// Function to initialize the cron handler
-pub fn initialize_cron_handler(
-    handler_config: &HandlerConfig,
-    shutdown_tx: broadcast::Sender<()>,
-) -> Result<JoinHandle<()>, Box<dyn Error>> {
-    let cron_expression = handler_config
-        .options
-        .cron_expression
-        .as_ref()
-        .ok_or("Cron expression missing in config")?;
-
-    let schedule = Schedule::from_str(cron_expression)?;
-    let shell_command = handler_config.shell.clone();
-    let handler_name = handler_config.name.clone();
-    let timeout = handler_config.timeout;
-    let retry_config = handler_config.retry.clone();
-    let mut shutdown_rx = shutdown_tx.subscribe();
+// Function to create the cron handler
+#[allow(clippy::too_many_arguments)]
+pub fn create_cron_handler(
+    cron_expression: String,
+    shell_command: String,
+    handler_name: String,
+    timeout: u64,
+    retry_config: RetryConfig,
+    mut shutdown_rx: broadcast::Receiver<()>,
+    event_bus: Arc<EventBus>,
+    mut event_rx: mpsc::UnboundedReceiver<Event>,
+    forward_to: Vec<String>,
+) -> Result<JoinHandle<()>, Box<dyn Error + Send + Sync>> {
+    let schedule = Schedule::from_str(&cron_expression)?;
 
     info!(
         "Initializing Cron handler '{}' with expression: {}",
@@ -54,6 +54,36 @@ pub fn initialize_cron_handler(
                         _ = sleep(std_duration) => {
                             info!("Executing cron task '{}' at {:?}", handler_name, Utc::now());
                             execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config).await;
+
+                            // Forward event if configured
+                            if !forward_to.is_empty() {
+                                let event = Event::from_cron(&handler_name, &cron_expression, next);
+
+                                for target in &forward_to {
+                                    if let Err(e) = event_bus.send(target, event.clone()) {
+                                        warn!("Failed to forward event to '{}': {}", target, e);
+                                    } else {
+                                        debug!("Forwarded cron event to '{}'", target);
+                                    }
+                                }
+                            }
+                        }
+                        Some(forwarded_event) = event_rx.recv() => {
+                            // Handle forwarded events from other handlers
+                            info!(
+                                "Cron handler '{}' received forwarded event from '{}'",
+                                handler_name, forwarded_event.source_handler
+                            );
+                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config).await;
+
+                            // Forward to next handlers if configured
+                            if !forward_to.is_empty() {
+                                for target in &forward_to {
+                                    if let Err(e) = event_bus.send(target, forwarded_event.clone()) {
+                                        warn!("Failed to forward event to '{}': {}", target, e);
+                                    }
+                                }
+                            }
                         }
                         _ = shutdown_rx.recv() => {
                             info!("Cron handler '{}' received shutdown signal", handler_name);
@@ -84,25 +114,14 @@ pub fn initialize_cron_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{EventType, Options, RetryConfig};
 
-    fn create_handler_config(cron_expression: Option<String>) -> HandlerConfig {
-        HandlerConfig {
-            event_type: EventType::Cron,
-            name: "test-cron".to_string(),
-            options: Options {
-                options_type: "cron".to_string(),
-                queue_url: None,
-                poll_interval: None,
-                port: None,
-                path: None,
-                aws_region: None,
-                cron_expression,
-            },
-            shell: "echo 'test'".to_string(),
-            timeout: 30,
-            retry: RetryConfig::default(),
-        }
+    /// Helper to create test dependencies
+    fn create_test_deps() -> (Arc<EventBus>, mpsc::UnboundedReceiver<Event>) {
+        let event_bus = Arc::new(EventBus::new());
+        let (tx, rx) = mpsc::unbounded_channel();
+        // We don't register with the bus since we're just testing the handler
+        drop(tx);
+        (event_bus, rx)
     }
 
     #[test]
@@ -122,32 +141,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_initialize_cron_handler_missing_expression() {
-        let config = create_handler_config(None);
+    async fn test_create_cron_handler_invalid_expression() {
         let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
 
-        let result = initialize_cron_handler(&config, shutdown_tx);
+        let result = create_cron_handler(
+            "invalid cron".to_string(),
+            "echo 'test'".to_string(),
+            "test-cron".to_string(),
+            30,
+            RetryConfig::default(),
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+        );
         assert!(result.is_err());
-
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("Cron expression missing"));
     }
 
     #[tokio::test]
-    async fn test_initialize_cron_handler_invalid_expression() {
-        let config = create_handler_config(Some("invalid cron".to_string()));
+    async fn test_create_cron_handler_valid_expression() {
         let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
 
-        let result = initialize_cron_handler(&config, shutdown_tx);
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_initialize_cron_handler_valid_expression() {
-        let config = create_handler_config(Some("0 * * * * *".to_string()));
-        let (shutdown_tx, _) = broadcast::channel(1);
-
-        let result = initialize_cron_handler(&config, shutdown_tx);
+        let result = create_cron_handler(
+            "0 * * * * *".to_string(),
+            "echo 'test'".to_string(),
+            "test-cron".to_string(),
+            30,
+            RetryConfig::default(),
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+        );
         assert!(result.is_ok());
 
         // Clean up the spawned task
@@ -156,11 +185,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_cron_handler_shutdown() {
-        let config = create_handler_config(Some("0 * * * * *".to_string()));
         let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
 
-        let handle = initialize_cron_handler(&config, shutdown_tx.clone())
-            .expect("Failed to initialize cron handler");
+        let handle = create_cron_handler(
+            "0 * * * * *".to_string(),
+            "echo 'test'".to_string(),
+            "test-cron".to_string(),
+            30,
+            RetryConfig::default(),
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+        )
+        .expect("Failed to create cron handler");
 
         // Send shutdown signal
         let _ = shutdown_tx.send(());
