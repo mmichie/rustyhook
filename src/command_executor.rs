@@ -1,4 +1,4 @@
-use crate::config::RetryConfig;
+use crate::config::{RetryConfig, ShellConfig};
 use crate::event::{keys, Event, EventType};
 use log::{error, info, warn};
 use std::collections::HashMap;
@@ -32,14 +32,36 @@ pub async fn execute_shell_command(
     command: &str,
     handler_name: &str,
     timeout_secs: u64,
+    shell_config: &ShellConfig,
 ) -> CommandResult {
+    let shell_info = match shell_config.get_shell_command() {
+        Some((prog, _)) => prog.to_string(),
+        None => "direct".to_string(),
+    };
     info!(
-        "Executing command for '{}' (timeout: {}s): {}",
-        handler_name, timeout_secs, command
+        "Executing command for '{}' (timeout: {}s, shell: {}): {}",
+        handler_name, timeout_secs, shell_info, command
     );
 
     let timeout_duration = Duration::from_secs(timeout_secs);
-    let command_future = Command::new("sh").arg("-c").arg(command).output();
+
+    let command_future = match shell_config.get_shell_command() {
+        Some((shell, arg)) => Command::new(shell).arg(arg).arg(command).output(),
+        None => {
+            // Direct execution without shell - split command into program and args
+            let parts: Vec<&str> = command.split_whitespace().collect();
+            if parts.is_empty() {
+                return CommandResult::ExecutionError {
+                    message: "Empty command".to_string(),
+                };
+            }
+            let mut cmd = Command::new(parts[0]);
+            if parts.len() > 1 {
+                cmd.args(&parts[1..]);
+            }
+            cmd.output()
+        }
+    };
 
     match timeout(timeout_duration, command_future).await {
         Ok(Ok(output)) => {
@@ -84,12 +106,13 @@ pub async fn execute_shell_command_with_retry(
     handler_name: &str,
     timeout_secs: u64,
     retry_config: &RetryConfig,
+    shell_config: &ShellConfig,
 ) -> CommandResult {
     let mut attempt = 0;
     let mut current_delay_ms = retry_config.delay_ms;
 
     loop {
-        let result = execute_shell_command(command, handler_name, timeout_secs).await;
+        let result = execute_shell_command(command, handler_name, timeout_secs, shell_config).await;
 
         if result.is_success() {
             return result;
@@ -132,12 +155,20 @@ pub async fn execute_shell_command_with_context(
     context: &str,
     timeout_secs: u64,
     retry_config: &RetryConfig,
+    shell_config: &ShellConfig,
 ) -> CommandResult {
     info!(
         "Executing command for '{}' ({}): {}",
         handler_name, context, command
     );
-    execute_shell_command_with_retry(command, handler_name, timeout_secs, retry_config).await
+    execute_shell_command_with_retry(
+        command,
+        handler_name,
+        timeout_secs,
+        retry_config,
+        shell_config,
+    )
+    .await
 }
 
 /// Environment variable prefix for rustyhook event data
@@ -235,24 +266,47 @@ pub async fn execute_shell_command_with_event(
     handler_name: &str,
     timeout_secs: u64,
     event: &Event,
+    shell_config: &ShellConfig,
 ) -> CommandResult {
+    let shell_info = match shell_config.get_shell_command() {
+        Some((prog, _)) => prog.to_string(),
+        None => "direct".to_string(),
+    };
     info!(
-        "Executing command for '{}' with event {} (timeout: {}s): {}",
-        handler_name, event.id, timeout_secs, command
+        "Executing command for '{}' with event {} (timeout: {}s, shell: {}): {}",
+        handler_name, event.id, timeout_secs, shell_info, command
     );
 
     let env_vars = build_event_env_vars(event);
     let timeout_duration = Duration::from_secs(timeout_secs);
 
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command);
-
-    // Add event environment variables
-    for (key, value) in &env_vars {
-        cmd.env(key, value);
-    }
-
-    let command_future = cmd.output();
+    let command_future = match shell_config.get_shell_command() {
+        Some((shell, arg)) => {
+            let mut cmd = Command::new(shell);
+            cmd.arg(arg).arg(command);
+            for (key, value) in &env_vars {
+                cmd.env(key, value);
+            }
+            cmd.output()
+        }
+        None => {
+            // Direct execution without shell - split command into program and args
+            let parts: Vec<&str> = command.split_whitespace().collect();
+            if parts.is_empty() {
+                return CommandResult::ExecutionError {
+                    message: "Empty command".to_string(),
+                };
+            }
+            let mut cmd = Command::new(parts[0]);
+            if parts.len() > 1 {
+                cmd.args(&parts[1..]);
+            }
+            for (key, value) in &env_vars {
+                cmd.env(key, value);
+            }
+            cmd.output()
+        }
+    };
 
     match timeout(timeout_duration, command_future).await {
         Ok(Ok(output)) => {
@@ -298,13 +352,20 @@ pub async fn execute_shell_command_with_event_and_retry(
     timeout_secs: u64,
     event: &Event,
     retry_config: &RetryConfig,
+    shell_config: &ShellConfig,
 ) -> CommandResult {
     let mut attempt = 0;
     let mut current_delay_ms = retry_config.delay_ms;
 
     loop {
-        let result =
-            execute_shell_command_with_event(command, handler_name, timeout_secs, event).await;
+        let result = execute_shell_command_with_event(
+            command,
+            handler_name,
+            timeout_secs,
+            event,
+            shell_config,
+        )
+        .await;
 
         if result.is_success() {
             return result;
@@ -357,21 +418,26 @@ mod tests {
         }
     }
 
+    fn default_shell() -> ShellConfig {
+        ShellConfig::Simple("sh".to_string())
+    }
+
     #[tokio::test]
     async fn test_execute_shell_command_success() {
-        let result = execute_shell_command("echo 'test'", "test_handler", 30).await;
+        let result =
+            execute_shell_command("echo 'test'", "test_handler", 30, &default_shell()).await;
         assert_eq!(result, CommandResult::Success);
     }
 
     #[tokio::test]
     async fn test_execute_shell_command_failure() {
-        let result = execute_shell_command("false", "test_handler", 30).await;
+        let result = execute_shell_command("false", "test_handler", 30, &default_shell()).await;
         assert!(matches!(result, CommandResult::Failed { .. }));
     }
 
     #[tokio::test]
     async fn test_execute_shell_command_timeout() {
-        let result = execute_shell_command("sleep 10", "test_handler", 1).await;
+        let result = execute_shell_command("sleep 10", "test_handler", 1, &default_shell()).await;
         assert_eq!(result, CommandResult::Timeout);
     }
 
@@ -382,6 +448,7 @@ mod tests {
             "test_handler",
             30,
             &retry_config(3, 100),
+            &default_shell(),
         )
         .await;
         assert_eq!(result, CommandResult::Success);
@@ -395,6 +462,7 @@ mod tests {
             "test_handler",
             30,
             &retry_config(2, 50), // 2 retries with 50ms initial delay
+            &default_shell(),
         )
         .await;
         let elapsed = start.elapsed();
@@ -413,8 +481,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_with_retry_no_retry_configured() {
-        let result =
-            execute_shell_command_with_retry("false", "test_handler", 30, &no_retry()).await;
+        let result = execute_shell_command_with_retry(
+            "false",
+            "test_handler",
+            30,
+            &no_retry(),
+            &default_shell(),
+        )
+        .await;
         assert!(matches!(result, CommandResult::Failed { .. }));
     }
 
@@ -456,6 +530,7 @@ mod tests {
             "test_handler",
             30,
             &retry_config(3, 10), // 3 retries with 10ms delay
+            &default_shell(),
         )
         .await;
 
@@ -474,6 +549,7 @@ mod tests {
             "test context",
             30,
             &no_retry(),
+            &default_shell(),
         )
         .await;
         assert_eq!(result, CommandResult::Success);
@@ -631,6 +707,7 @@ mod tests {
             "test_handler",
             30,
             &event,
+            &default_shell(),
         )
         .await;
 
@@ -656,7 +733,14 @@ mod tests {
             tmp_file
         );
 
-        let result = execute_shell_command_with_event(&command, "test_handler", 30, &event).await;
+        let result = execute_shell_command_with_event(
+            &command,
+            "test_handler",
+            30,
+            &event,
+            &default_shell(),
+        )
+        .await;
         assert_eq!(result, CommandResult::Success);
 
         // Read and verify the output
@@ -676,6 +760,7 @@ mod tests {
             30,
             &event,
             &retry_config(3, 10),
+            &default_shell(),
         )
         .await;
 
@@ -692,6 +777,7 @@ mod tests {
             30,
             &event,
             &retry_config(1, 10),
+            &default_shell(),
         )
         .await;
 
@@ -702,8 +788,89 @@ mod tests {
     async fn test_execute_with_event_timeout() {
         let event = Event::from_webhook("handler", "GET", "/test", "");
 
-        let result = execute_shell_command_with_event("sleep 10", "test_handler", 1, &event).await;
+        let result = execute_shell_command_with_event(
+            "sleep 10",
+            "test_handler",
+            1,
+            &event,
+            &default_shell(),
+        )
+        .await;
 
         assert_eq!(result, CommandResult::Timeout);
+    }
+
+    // ============== Shell configuration tests ==============
+
+    #[test]
+    fn test_shell_config_default() {
+        let shell = ShellConfig::default();
+        // Default should be either from $SHELL or "sh"
+        match shell {
+            ShellConfig::Simple(s) => assert!(!s.is_empty()),
+            ShellConfig::None => panic!("Default should not be None"),
+        }
+    }
+
+    #[test]
+    fn test_shell_config_get_shell_command_sh() {
+        let shell = ShellConfig::Simple("sh".to_string());
+        let (prog, arg) = shell.get_shell_command().unwrap();
+        assert_eq!(prog, "sh");
+        assert_eq!(arg, "-c");
+    }
+
+    #[test]
+    fn test_shell_config_get_shell_command_bash() {
+        let shell = ShellConfig::Simple("bash".to_string());
+        let (prog, arg) = shell.get_shell_command().unwrap();
+        assert_eq!(prog, "bash");
+        assert_eq!(arg, "-c");
+    }
+
+    #[test]
+    fn test_shell_config_get_shell_command_zsh() {
+        let shell = ShellConfig::Simple("zsh".to_string());
+        let (prog, arg) = shell.get_shell_command().unwrap();
+        assert_eq!(prog, "zsh");
+        assert_eq!(arg, "-c");
+    }
+
+    #[test]
+    fn test_shell_config_get_shell_command_powershell() {
+        let shell = ShellConfig::Simple("powershell".to_string());
+        let (prog, arg) = shell.get_shell_command().unwrap();
+        assert_eq!(prog, "powershell");
+        assert_eq!(arg, "-Command");
+    }
+
+    #[test]
+    fn test_shell_config_get_shell_command_cmd() {
+        let shell = ShellConfig::Simple("cmd".to_string());
+        let (prog, arg) = shell.get_shell_command().unwrap();
+        assert_eq!(prog, "cmd");
+        assert_eq!(arg, "/c");
+    }
+
+    #[test]
+    fn test_shell_config_none() {
+        let shell = ShellConfig::None;
+        assert!(shell.get_shell_command().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_bash_shell() {
+        let shell = ShellConfig::Simple("bash".to_string());
+        let result =
+            execute_shell_command("echo 'test with bash'", "test_handler", 30, &shell).await;
+        assert_eq!(result, CommandResult::Success);
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_custom_shell() {
+        // Test with an explicitly specified shell
+        let shell = ShellConfig::Simple("sh".to_string());
+        let result = execute_shell_command("echo $0", "test_handler", 30, &shell).await;
+        assert_eq!(result, CommandResult::Success);
     }
 }

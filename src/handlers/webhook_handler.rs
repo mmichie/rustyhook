@@ -1,5 +1,5 @@
 use crate::command_executor::execute_shell_command_with_context;
-use crate::config::RetryConfig;
+use crate::config::{RetryConfig, ShellConfig};
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use http_body_util::Full;
@@ -22,6 +22,7 @@ struct WebhookState {
     handler_name: String,
     timeout: u64,
     retry_config: Arc<RetryConfig>,
+    shell_config: ShellConfig,
     event_bus: Arc<EventBus>,
     forward_to: Vec<String>,
 }
@@ -35,6 +36,7 @@ pub async fn webhook_listener(
     handler_name: String,
     timeout: u64,
     retry_config: RetryConfig,
+    shell_config: ShellConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
@@ -59,6 +61,7 @@ pub async fn webhook_listener(
         handler_name: handler_name.clone(),
         timeout,
         retry_config: Arc::new(retry_config),
+        shell_config,
         event_bus: event_bus.clone(),
         forward_to: forward_to.clone(),
     });
@@ -103,6 +106,7 @@ pub async fn webhook_listener(
                     &context,
                     state.timeout,
                     &state.retry_config,
+                    &state.shell_config,
                 ).await;
 
                 // Forward to next handlers if configured
@@ -151,6 +155,7 @@ async fn handle_webhook(
             &context,
             state.timeout,
             &state.retry_config,
+            &state.shell_config,
         )
         .await;
 
@@ -185,7 +190,7 @@ async fn handle_webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RetryConfig;
+    use crate::config::{RetryConfig, ShellConfig};
     use std::time::Duration;
     use tokio::sync::mpsc;
     use tokio::time::sleep;
@@ -222,6 +227,7 @@ mod tests {
             "test-handler".to_string(),
             30,
             RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
             shutdown_rx,
             event_bus,
             event_rx,
@@ -262,6 +268,7 @@ mod tests {
             "test-handler".to_string(),
             30,
             RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
             shutdown_rx,
             event_bus,
             event_rx,
@@ -301,6 +308,7 @@ mod tests {
             "test-handler".to_string(),
             30,
             RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
             shutdown_rx,
             event_bus,
             event_rx,
@@ -333,6 +341,7 @@ mod tests {
             "test-handler".to_string(),
             30,
             RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
             shutdown_rx,
             event_bus,
             event_rx,
@@ -375,6 +384,7 @@ mod tests {
             "test-handler".to_string(),
             30,
             RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
             shutdown_rx,
             event_bus,
             event_rx,

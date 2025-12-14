@@ -10,6 +10,7 @@ handlers:
     shell: "echo 'Filesystem change detected!' && some_script.sh"
 
   # Filtered handler - only watches specific file types
+  # Uses bash shell explicitly (default is $SHELL or sh)
   - type: Filesystem
     name: Rust File Watcher
     options:
@@ -26,6 +27,10 @@ handlers:
         - "target/**"
         - "**/*.bak"
     shell: "cargo check"
+    # Optional: specify which shell to use for command execution
+    # Supported: sh, bash, zsh, fish, dash, ksh (Unix), powershell, pwsh, cmd (Windows)
+    # Default: $SHELL environment variable, or "sh" if not set
+    shell_program: bash
 
   # Handler with only exclusions - watches everything except specified patterns
   - type: Filesystem

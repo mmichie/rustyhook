@@ -1,5 +1,5 @@
 use crate::command_executor::execute_shell_command_with_retry;
-use crate::config::RetryConfig;
+use crate::config::{RetryConfig, ShellConfig};
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use chrono::Utc;
@@ -27,6 +27,7 @@ pub fn create_cron_handler(
     handler_name: String,
     timeout: u64,
     retry_config: RetryConfig,
+    shell_config: ShellConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
@@ -53,7 +54,7 @@ pub fn create_cron_handler(
                     tokio::select! {
                         _ = sleep(std_duration) => {
                             info!("Executing cron task '{}' at {:?}", handler_name, Utc::now());
-                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config).await;
+                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config, &shell_config).await;
 
                             // Forward event if configured
                             if !forward_to.is_empty() {
@@ -74,7 +75,7 @@ pub fn create_cron_handler(
                                 "Cron handler '{}' received forwarded event from '{}'",
                                 handler_name, forwarded_event.source_handler
                             );
-                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config).await;
+                            execute_shell_command_with_retry(&shell_command, &handler_name, timeout, &retry_config, &shell_config).await;
 
                             // Forward to next handlers if configured
                             if !forward_to.is_empty() {
@@ -152,6 +153,7 @@ mod tests {
             "test-cron".to_string(),
             30,
             RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
             shutdown_rx,
             event_bus,
             event_rx,
@@ -172,6 +174,7 @@ mod tests {
             "test-cron".to_string(),
             30,
             RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
             shutdown_rx,
             event_bus,
             event_rx,
@@ -195,6 +198,7 @@ mod tests {
             "test-cron".to_string(),
             30,
             RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
             shutdown_rx,
             event_bus,
             event_rx,

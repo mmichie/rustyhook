@@ -234,6 +234,7 @@ fn initialize_sqs_handler(
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
         let retry_config = handler_config.retry.clone();
+        let shell_config = handler_config.shell_program.clone();
         let forward_to = handler_config.forward_to.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let sqs_future: JoinHandle<()> = tokio::spawn(async move {
@@ -244,6 +245,7 @@ fn initialize_sqs_handler(
                 handler_name,
                 timeout,
                 retry_config,
+                shell_config,
                 shutdown_rx,
                 event_bus,
                 event_rx,
@@ -274,6 +276,7 @@ fn initialize_webhook_handler(
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
         let retry_config = handler_config.retry.clone();
+        let shell_config = handler_config.shell_program.clone();
         let forward_to = handler_config.forward_to.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let webhook_future = tokio::spawn(async move {
@@ -284,6 +287,7 @@ fn initialize_webhook_handler(
                 handler_name,
                 timeout,
                 retry_config,
+                shell_config,
                 shutdown_rx,
                 event_bus,
                 event_rx,
@@ -317,6 +321,7 @@ fn initialize_filesystem_handler(
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
         let retry_config = handler_config.retry.clone();
+        let shell_config = handler_config.shell_program.clone();
         let forward_to = handler_config.forward_to.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let filesystem_future = tokio::spawn(async move {
@@ -326,6 +331,7 @@ fn initialize_filesystem_handler(
                 handler_name,
                 timeout,
                 retry_config,
+                shell_config,
                 shutdown_rx,
                 event_bus,
                 event_rx,
@@ -359,6 +365,7 @@ fn initialize_cron_handler(
         let handler_name = handler_config.name.clone();
         let timeout = handler_config.timeout;
         let retry_config = handler_config.retry.clone();
+        let shell_config = handler_config.shell_program.clone();
         let forward_to = handler_config.forward_to.clone();
         let shutdown_rx = shutdown_tx.subscribe();
 
@@ -368,6 +375,7 @@ fn initialize_cron_handler(
             handler_name.clone(),
             timeout,
             retry_config,
+            shell_config,
             shutdown_rx,
             event_bus,
             event_rx,

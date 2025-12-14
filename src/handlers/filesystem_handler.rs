@@ -1,5 +1,5 @@
 use crate::command_executor::execute_shell_command_with_context;
-use crate::config::RetryConfig;
+use crate::config::{RetryConfig, ShellConfig};
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -46,6 +46,7 @@ pub async fn filesystem_watcher(
     handler_name: String,
     timeout: u64,
     retry_config: RetryConfig,
+    shell_config: ShellConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
@@ -153,7 +154,7 @@ pub async fn filesystem_watcher(
                     handler_name, forwarded_event.source_handler
                 );
                 let context = format!("Forwarded from: {}", forwarded_event.source_handler);
-                execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config).await;
+                execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config, &shell_config).await;
 
                 // Forward to next handlers if configured
                 if !forward_to.is_empty() {
@@ -196,7 +197,7 @@ pub async fn filesystem_watcher(
                         event_count, paths, event_kinds
                     );
 
-                    execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config).await;
+                    execute_shell_command_with_context(&shell_command, &handler_name, &context, timeout, &retry_config, &shell_config).await;
 
                     // Forward consolidated event if configured
                     if !forward_to.is_empty() {

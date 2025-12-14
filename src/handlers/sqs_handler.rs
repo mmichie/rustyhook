@@ -1,5 +1,5 @@
 use crate::command_executor::execute_shell_command_with_context;
-use crate::config::RetryConfig;
+use crate::config::{RetryConfig, ShellConfig};
 use crate::event::Event;
 use crate::event_bus::EventBus;
 use log::{debug, error, info, warn};
@@ -20,6 +20,7 @@ pub async fn sqs_poller(
     handler_name: String,
     timeout: u64,
     retry_config: RetryConfig,
+    shell_config: ShellConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
@@ -51,7 +52,7 @@ pub async fn sqs_poller(
                     Some(messages) if !messages.is_empty() => {
                         info!("Received {} messages", messages.len());
                         for message in messages {
-                            process_message(&message, &shell_command, &handler_name, timeout, &retry_config).await;
+                            process_message(&message, &shell_command, &handler_name, timeout, &retry_config, &shell_config).await;
                             delete_message(&client, &queue_url, &message).await;
 
                             // Forward event if configured
@@ -97,6 +98,7 @@ pub async fn sqs_poller(
                     &context,
                     timeout,
                     &retry_config,
+                    &shell_config,
                 ).await;
 
                 // Forward to next handlers if configured
@@ -145,6 +147,7 @@ async fn process_message(
     handler_name: &str,
     timeout: u64,
     retry_config: &RetryConfig,
+    shell_config: &ShellConfig,
 ) {
     info!("Processing message: {:?}", message);
 
@@ -158,6 +161,7 @@ async fn process_message(
         &context,
         timeout,
         retry_config,
+        shell_config,
     )
     .await;
 }

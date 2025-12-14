@@ -1,10 +1,64 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::{error::Error, fmt, fs};
+use std::{env, error::Error, fmt, fs};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub handlers: Vec<HandlerConfig>,
+}
+
+/// Configuration for which shell to use when executing commands.
+///
+/// Supports common shells like sh, bash, zsh (Unix) and powershell, cmd (Windows).
+/// Each shell has different syntax for executing commands.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum ShellConfig {
+    /// Simple shell name (e.g., "bash", "sh", "zsh", "powershell", "cmd")
+    Simple(String),
+    /// Explicit "none" - execute command directly without a shell
+    #[serde(rename = "none")]
+    None,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        // Default to $SHELL environment variable, or "sh" if not set
+        if let Ok(shell) = env::var("SHELL") {
+            // Extract just the shell name from the path (e.g., "/bin/bash" -> "bash")
+            if let Some(name) = std::path::Path::new(&shell).file_name() {
+                if let Some(name_str) = name.to_str() {
+                    return ShellConfig::Simple(name_str.to_string());
+                }
+            }
+            ShellConfig::Simple(shell)
+        } else {
+            ShellConfig::Simple("sh".to_string())
+        }
+    }
+}
+
+impl ShellConfig {
+    /// Get the shell program and argument for command execution.
+    /// Returns (program, arg) tuple, e.g., ("bash", "-c") or ("cmd", "/c").
+    /// Returns None if shell is configured as "none" (direct execution).
+    pub fn get_shell_command(&self) -> Option<(&str, &str)> {
+        match self {
+            ShellConfig::None => None,
+            ShellConfig::Simple(shell) => {
+                let shell_lower = shell.to_lowercase();
+                match shell_lower.as_str() {
+                    "sh" | "bash" | "zsh" | "fish" | "dash" | "ash" | "ksh" => {
+                        Some((shell.as_str(), "-c"))
+                    }
+                    "powershell" | "pwsh" => Some((shell.as_str(), "-Command")),
+                    "cmd" => Some((shell.as_str(), "/c")),
+                    // Default to Unix-style -c for unknown shells
+                    _ => Some((shell.as_str(), "-c")),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -13,13 +67,17 @@ pub struct HandlerConfig {
     pub event_type: EventType,
     pub name: String,     // Renamed from 'handler' to 'name'
     pub options: Options, // Changed to a struct to match the YAML format
-    pub shell: String,    // Directly included as a field
+    pub shell: String, // The command to execute (renamed from 'shell' but kept for config compat)
     #[serde(default = "default_timeout")]
     pub timeout: u64, // Command timeout in seconds (default: 300)
     #[serde(default)]
     pub retry: RetryConfig, // Retry configuration (optional)
     #[serde(default)]
     pub forward_to: Vec<String>, // Handler names to forward events to
+    /// Shell to use for command execution (e.g., "bash", "zsh", "sh", "powershell")
+    /// Defaults to $SHELL environment variable or "sh" if not set
+    #[serde(default, rename = "shell_program")]
+    pub shell_program: ShellConfig,
 }
 
 fn default_timeout() -> u64 {
