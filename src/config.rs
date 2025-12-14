@@ -77,6 +77,19 @@ pub enum EventType {
     Database,
 }
 
+impl fmt::Display for EventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EventType::Sqs => write!(f, "SQS"),
+            EventType::WebPolling => write!(f, "WebPolling"),
+            EventType::Cron => write!(f, "Cron"),
+            EventType::Webhook => write!(f, "Webhook"),
+            EventType::Filesystem => write!(f, "Filesystem"),
+            EventType::Database => write!(f, "Database"),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Options {
     #[serde(rename = "type")]
@@ -122,6 +135,18 @@ pub enum ValidationError {
     SelfForwarding { handler: String },
     /// Circular dependency detected in forward_to chain
     CircularDependency { cycle: Vec<String> },
+    /// Handler is missing required options for its type
+    MissingOption {
+        handler: String,
+        handler_type: String,
+        option: String,
+    },
+    /// Invalid option value
+    InvalidOption {
+        handler: String,
+        option: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -143,6 +168,28 @@ impl fmt::Display for ValidationError {
             ValidationError::CircularDependency { cycle } => {
                 write!(f, "Circular dependency detected: {}", cycle.join(" -> "))
             }
+            ValidationError::MissingOption {
+                handler,
+                handler_type,
+                option,
+            } => {
+                write!(
+                    f,
+                    "Handler '{}' (type: {}) is missing required option: {}",
+                    handler, handler_type, option
+                )
+            }
+            ValidationError::InvalidOption {
+                handler,
+                option,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "Handler '{}' has invalid option '{}': {}",
+                    handler, option, reason
+                )
+            }
         }
     }
 }
@@ -156,6 +203,8 @@ impl Error for ValidationError {}
 /// - All forward_to targets reference existing handlers
 /// - No handler forwards to itself
 /// - No circular dependencies in the forwarding chain
+/// - Handler-specific required options are present
+/// - Handler option values are valid (e.g., cron expressions)
 pub fn validate_config(config: &Config) -> Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
 
@@ -198,6 +247,9 @@ pub fn validate_config(config: &Config) -> Result<(), Vec<ValidationError>> {
             &handler.name,
             handler.forward_to.iter().map(|s| s.as_str()).collect(),
         );
+
+        // Validate handler-specific options
+        validate_handler_options(handler, &mut errors);
     }
 
     // Detect circular dependencies using DFS
@@ -210,6 +262,86 @@ pub fn validate_config(config: &Config) -> Result<(), Vec<ValidationError>> {
     } else {
         Err(errors)
     }
+}
+
+/// Validate that a handler has the required options for its type
+fn validate_handler_options(handler: &HandlerConfig, errors: &mut Vec<ValidationError>) {
+    match handler.event_type {
+        EventType::Sqs => {
+            if handler.options.queue_url.is_none() {
+                errors.push(ValidationError::MissingOption {
+                    handler: handler.name.clone(),
+                    handler_type: handler.event_type.to_string(),
+                    option: "queue_url".to_string(),
+                });
+            }
+            if handler.options.poll_interval.is_none() {
+                errors.push(ValidationError::MissingOption {
+                    handler: handler.name.clone(),
+                    handler_type: handler.event_type.to_string(),
+                    option: "poll_interval".to_string(),
+                });
+            }
+        }
+        EventType::Webhook => {
+            if handler.options.port.is_none() {
+                errors.push(ValidationError::MissingOption {
+                    handler: handler.name.clone(),
+                    handler_type: handler.event_type.to_string(),
+                    option: "port".to_string(),
+                });
+            }
+            if handler.options.path.is_none() {
+                errors.push(ValidationError::MissingOption {
+                    handler: handler.name.clone(),
+                    handler_type: handler.event_type.to_string(),
+                    option: "path".to_string(),
+                });
+            }
+        }
+        EventType::Filesystem => {
+            if handler.options.path.is_none() {
+                errors.push(ValidationError::MissingOption {
+                    handler: handler.name.clone(),
+                    handler_type: handler.event_type.to_string(),
+                    option: "path".to_string(),
+                });
+            }
+        }
+        EventType::Cron => {
+            match &handler.options.cron_expression {
+                None => {
+                    errors.push(ValidationError::MissingOption {
+                        handler: handler.name.clone(),
+                        handler_type: handler.event_type.to_string(),
+                        option: "cron_expression".to_string(),
+                    });
+                }
+                Some(expr) => {
+                    // Validate cron expression syntax
+                    if let Err(e) = validate_cron_expression(expr) {
+                        errors.push(ValidationError::InvalidOption {
+                            handler: handler.name.clone(),
+                            option: "cron_expression".to_string(),
+                            reason: e,
+                        });
+                    }
+                }
+            }
+        }
+        EventType::WebPolling | EventType::Database => {
+            // Not yet implemented, no validation
+        }
+    }
+}
+
+/// Validate a cron expression syntax
+fn validate_cron_expression(expression: &str) -> Result<(), String> {
+    use cron::Schedule;
+    use std::str::FromStr;
+
+    Schedule::from_str(expression).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Detect cycles in the forward_to graph using DFS.
@@ -1140,5 +1272,226 @@ handlers:
         let config = parse_config(yaml).expect("Failed to parse config");
         let handler = &config.handlers[0];
         assert_eq!(handler.options.include, vec!["**/*.rs"]);
+    }
+
+    // ============== semantic validation tests ==============
+
+    #[test]
+    fn test_validate_sqs_missing_queue_url() {
+        let yaml = r#"
+handlers:
+  - type: SQS
+    name: test-sqs
+    options:
+      type: sqs
+      poll_interval: 30
+    shell: echo "sqs message"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            ValidationError::MissingOption { handler, handler_type, option }
+                if handler == "test-sqs" && handler_type == "SQS" && option == "queue_url"
+        )));
+    }
+
+    #[test]
+    fn test_validate_sqs_missing_poll_interval() {
+        let yaml = r#"
+handlers:
+  - type: SQS
+    name: test-sqs
+    options:
+      type: sqs
+      queue_url: https://sqs.us-east-1.amazonaws.com/123456789/my-queue
+    shell: echo "sqs message"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            ValidationError::MissingOption { handler, handler_type, option }
+                if handler == "test-sqs" && handler_type == "SQS" && option == "poll_interval"
+        )));
+    }
+
+    #[test]
+    fn test_validate_webhook_missing_port() {
+        let yaml = r#"
+handlers:
+  - type: Webhook
+    name: test-webhook
+    options:
+      type: http
+      path: /webhook
+    shell: echo "webhook"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            ValidationError::MissingOption { handler, handler_type, option }
+                if handler == "test-webhook" && handler_type == "Webhook" && option == "port"
+        )));
+    }
+
+    #[test]
+    fn test_validate_webhook_missing_path() {
+        let yaml = r#"
+handlers:
+  - type: Webhook
+    name: test-webhook
+    options:
+      type: http
+      port: 8080
+    shell: echo "webhook"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            ValidationError::MissingOption { handler, handler_type, option }
+                if handler == "test-webhook" && handler_type == "Webhook" && option == "path"
+        )));
+    }
+
+    #[test]
+    fn test_validate_filesystem_missing_path() {
+        let yaml = r#"
+handlers:
+  - type: Filesystem
+    name: test-fs
+    options:
+      type: filesystem
+    shell: echo "file changed"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            ValidationError::MissingOption { handler, handler_type, option }
+                if handler == "test-fs" && handler_type == "Filesystem" && option == "path"
+        )));
+    }
+
+    #[test]
+    fn test_validate_cron_missing_expression() {
+        let yaml = r#"
+handlers:
+  - type: Cron
+    name: test-cron
+    options:
+      type: cron
+    shell: echo "cron triggered"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| matches!(
+            e,
+            ValidationError::MissingOption { handler, handler_type, option }
+                if handler == "test-cron" && handler_type == "Cron" && option == "cron_expression"
+        )));
+    }
+
+    #[test]
+    fn test_validate_cron_invalid_expression() {
+        let yaml = r#"
+handlers:
+  - type: Cron
+    name: test-cron
+    options:
+      type: cron
+      cron_expression: "not a valid cron"
+    shell: echo "cron triggered"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(
+                |e| matches!(e, ValidationError::InvalidOption { handler, option, .. }
+                if handler == "test-cron" && option == "cron_expression")
+            ),
+            "Expected InvalidOption error for cron_expression, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_cron_valid_expression() {
+        let yaml = r#"
+handlers:
+  - type: Cron
+    name: test-cron
+    options:
+      type: cron
+      cron_expression: "0 0 * * * *"
+    shell: echo "cron triggered"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_ok(), "Expected valid config: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_multiple_missing_options() {
+        // SQS handler missing both queue_url and poll_interval
+        let yaml = r#"
+handlers:
+  - type: SQS
+    name: test-sqs
+    options:
+      type: sqs
+    shell: echo "sqs message"
+"#;
+        let config = parse_config(yaml).expect("Failed to parse config");
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.len() >= 2,
+            "Expected at least 2 errors, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validation_error_missing_option_display() {
+        let err = ValidationError::MissingOption {
+            handler: "my-handler".to_string(),
+            handler_type: "Webhook".to_string(),
+            option: "port".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "Handler 'my-handler' (type: Webhook) is missing required option: port"
+        );
+    }
+
+    #[test]
+    fn test_validation_error_invalid_option_display() {
+        let err = ValidationError::InvalidOption {
+            handler: "my-cron".to_string(),
+            option: "cron_expression".to_string(),
+            reason: "invalid syntax".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "Handler 'my-cron' has invalid option 'cron_expression': invalid syntax"
+        );
     }
 }

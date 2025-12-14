@@ -27,16 +27,36 @@ use crate::handlers::{cron_handler, filesystem_handler, sqs_handler, webhook_han
 async fn main() {
     env_logger::init();
 
-    let config_path = get_config_path();
-    let config = load_app_config(&config_path);
+    let cli_args = parse_cli_args();
+    let config = load_app_config(&cli_args.config_path);
 
-    // Validate configuration (checks for unique names, valid forward_to targets, no cycles)
+    // Validate configuration (checks for unique names, valid forward_to targets, no cycles,
+    // handler-specific required options, and option value validity)
     if let Err(errors) = validate_config(&config) {
         for err in &errors {
             error!("Configuration error: {}", err);
         }
+        if cli_args.validate_only {
+            eprintln!(
+                "Configuration validation failed with {} error(s)",
+                errors.len()
+            );
+        }
         std::process::exit(1);
     }
+
+    // In validate-only mode, print success and exit
+    if cli_args.validate_only {
+        println!(
+            "Configuration is valid: {} handler(s) defined",
+            config.handlers.len()
+        );
+        for handler in &config.handlers {
+            println!("  - {} ({})", handler.name, handler.event_type);
+        }
+        std::process::exit(0);
+    }
+
     info!("Configuration validated successfully");
 
     // Create shutdown channel
@@ -106,8 +126,13 @@ async fn main() {
     }
 }
 
-fn get_config_path() -> String {
-    let matches: clap::ArgMatches = Command::new("Arcnar")
+struct CliArgs {
+    config_path: String,
+    validate_only: bool,
+}
+
+fn parse_cli_args() -> CliArgs {
+    let matches: clap::ArgMatches = Command::new("rustyhook")
         .version("0.0.1")
         .author("Matt Michie")
         .about("Event-driven automation tool")
@@ -119,12 +144,21 @@ fn get_config_path() -> String {
                 .default_value("config.yml")
                 .help("Sets the path to the configuration file"),
         )
+        .arg(
+            Arg::new("validate")
+                .long("validate")
+                .action(clap::ArgAction::SetTrue)
+                .help("Validate configuration file and exit without starting handlers"),
+        )
         .get_matches();
 
-    matches
-        .get_one::<String>("config")
-        .expect("Failed to get config path")
-        .clone()
+    CliArgs {
+        config_path: matches
+            .get_one::<String>("config")
+            .expect("Failed to get config path")
+            .clone(),
+        validate_only: matches.get_flag("validate"),
+    }
 }
 
 fn load_app_config(config_path: &str) -> config::Config {
