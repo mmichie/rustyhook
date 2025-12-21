@@ -20,3 +20,19 @@ handlers:
     # Commands will run from this directory
     working_dir: "/var/www/myapp"
 
+  # Secure webhook with authentication token
+  # Requests must include X-Auth-Token header with the correct value
+  - type: Webhook
+    name: Secure Deploy Webhook
+    options:
+      type: Webhook
+      port: 9000
+      path: "/deploy/secure"
+      # Requires X-Auth-Token header to match this value
+      auth_token: "your-secret-token-here"
+    shell: |
+      echo "Authenticated deploy triggered"
+      docker compose pull
+      docker compose up -d
+    working_dir: "/opt/myapp"
+

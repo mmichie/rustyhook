@@ -162,6 +162,9 @@ pub struct Options {
     pub path: Option<String>,
     pub aws_region: Option<String>,
     pub cron_expression: Option<String>,
+    /// Authentication token for webhook handlers
+    /// If set, requests must include this token in the X-Auth-Token header
+    pub auth_token: Option<String>,
     /// Debounce duration in milliseconds for filesystem events (default: 100ms)
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,

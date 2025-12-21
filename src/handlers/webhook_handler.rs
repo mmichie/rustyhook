@@ -26,6 +26,8 @@ struct WebhookState {
     working_dir: Option<String>,
     event_bus: Arc<EventBus>,
     forward_to: Vec<String>,
+    /// Optional authentication token - if set, requests must include matching X-Auth-Token header
+    auth_token: Option<String>,
 }
 
 // Function to start the webhook listener
@@ -43,6 +45,7 @@ pub async fn webhook_listener(
     event_bus: Arc<EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<Event>,
     forward_to: Vec<String>,
+    auth_token: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener: TcpListener = match TcpListener::bind(&addr).await {
@@ -67,6 +70,7 @@ pub async fn webhook_listener(
         working_dir,
         event_bus: event_bus.clone(),
         forward_to: forward_to.clone(),
+        auth_token,
     });
 
     loop {
@@ -145,6 +149,40 @@ async fn handle_webhook(
     state: Arc<WebhookState>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if req.uri().path() == state.path {
+        // Check authentication if configured
+        if let Some(expected_token) = &state.auth_token {
+            let provided_token = req
+                .headers()
+                .get("X-Auth-Token")
+                .and_then(|v| v.to_str().ok());
+
+            match provided_token {
+                Some(token) if token == expected_token => {
+                    debug!("Authentication successful for webhook at {}", state.path);
+                }
+                Some(_) => {
+                    warn!(
+                        "Invalid auth token provided for webhook at {}",
+                        state.path
+                    );
+                    return Ok(Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Full::new(Bytes::from("Unauthorized")))
+                        .unwrap());
+                }
+                None => {
+                    warn!(
+                        "Missing auth token for webhook at {} (X-Auth-Token header required)",
+                        state.path
+                    );
+                    return Ok(Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Full::new(Bytes::from("Unauthorized")))
+                        .unwrap());
+                }
+            }
+        }
+
         // Process the webhook request
         info!("Webhook received at {}", state.path);
 
@@ -238,6 +276,7 @@ mod tests {
             event_bus,
             event_rx,
             Vec::new(),
+            None, // No auth token
         ));
 
         // Wait for server to start
@@ -280,6 +319,7 @@ mod tests {
             event_bus,
             event_rx,
             Vec::new(),
+            None, // No auth token
         ));
 
         // Wait for server to start
@@ -321,6 +361,7 @@ mod tests {
             event_bus,
             event_rx,
             Vec::new(),
+            None, // No auth token
         ));
 
         // Wait for server to start
@@ -355,6 +396,7 @@ mod tests {
             event_bus,
             event_rx,
             Vec::new(),
+            None, // No auth token
         ));
 
         // Wait for server to start
@@ -399,6 +441,7 @@ mod tests {
             event_bus,
             event_rx,
             Vec::new(),
+            None, // No auth token
         ));
 
         // Wait for server to start
@@ -424,5 +467,136 @@ mod tests {
     fn test_get_expected_path() {
         assert_eq!(get_expected_path("/webhook"), "/webhook");
         assert_eq!(get_expected_path("/api/v1/hook"), "/api/v1/hook");
+    }
+
+    #[tokio::test]
+    async fn test_webhook_auth_token_valid() {
+        let port = find_available_port().await;
+        let path = "/webhook".to_string();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            path.clone(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            Some("secret-token".to_string()),
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        // Make request with valid auth token
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/webhook", port))
+            .header("X-Auth-Token", "secret-token")
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "Webhook received");
+
+        // Shutdown
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_auth_token_missing() {
+        let port = find_available_port().await;
+        let path = "/webhook".to_string();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            path.clone(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            Some("secret-token".to_string()),
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        // Make request WITHOUT auth token - should be rejected
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/webhook", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 401);
+        assert_eq!(response.text().await.unwrap(), "Unauthorized");
+
+        // Shutdown
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_auth_token_invalid() {
+        let port = find_available_port().await;
+        let path = "/webhook".to_string();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            path.clone(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            Some("secret-token".to_string()),
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        // Make request with WRONG auth token - should be rejected
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/webhook", port))
+            .header("X-Auth-Token", "wrong-token")
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 401);
+        assert_eq!(response.text().await.unwrap(), "Unauthorized");
+
+        // Shutdown
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
     }
 }
