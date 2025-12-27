@@ -1,4 +1,4 @@
-use crate::command_executor::execute_shell_command_with_context;
+use crate::command_executor::{execute_shell_command_with_context, CommandResult};
 use crate::config::{RetryConfig, ShellConfig};
 use crate::event::Event;
 use crate::event_bus::EventBus;
@@ -38,29 +38,38 @@ pub async fn sqs_poller(
                     Some(messages) if !messages.is_empty() => {
                         info!("Received {} messages", messages.len());
                         for message in messages {
-                            process_message(&message, &shell_command, &handler_name, timeout, &retry_config, &shell_config, working_dir.as_deref()).await;
-                            delete_message(&client, &queue_url, &message).await;
+                            let result = process_message(&message, &shell_command, &handler_name, timeout, &retry_config, &shell_config, working_dir.as_deref()).await;
 
-                            // Forward event if configured
-                            if !forward_to.is_empty() {
-                                let message_body = message.body().unwrap_or("");
-                                let message_id = message.message_id().unwrap_or("");
-                                let receipt_handle = message.receipt_handle().unwrap_or("");
+                            if result.is_success() {
+                                delete_message(&client, &queue_url, &message).await;
 
-                                let event = Event::from_sqs(
-                                    &handler_name,
-                                    message_id,
-                                    message_body,
-                                    receipt_handle,
-                                );
+                                // Forward event only on success
+                                if !forward_to.is_empty() {
+                                    let message_body = message.body().unwrap_or("");
+                                    let message_id = message.message_id().unwrap_or("");
+                                    let receipt_handle = message.receipt_handle().unwrap_or("");
 
-                                for target in &forward_to {
-                                    if let Err(e) = event_bus.send(target, event.clone()) {
-                                        warn!("Failed to forward event to '{}': {}", target, e);
-                                    } else {
-                                        debug!("Forwarded SQS event to '{}'", target);
+                                    let event = Event::from_sqs(
+                                        &handler_name,
+                                        message_id,
+                                        message_body,
+                                        receipt_handle,
+                                    );
+
+                                    for target in &forward_to {
+                                        if let Err(e) = event_bus.send(target, event.clone()) {
+                                            warn!("Failed to forward event to '{}': {}", target, e);
+                                        } else {
+                                            debug!("Forwarded SQS event to '{}'", target);
+                                        }
                                     }
                                 }
+                            } else {
+                                let message_id = message.message_id().unwrap_or("unknown");
+                                warn!(
+                                    "Command failed for message {}, leaving in queue for retry",
+                                    message_id
+                                );
                             }
                         }
                     }
@@ -136,7 +145,7 @@ async fn process_message(
     retry_config: &RetryConfig,
     shell_config: &ShellConfig,
     working_dir: Option<&str>,
-) {
+) -> CommandResult {
     info!("Processing message: {:?}", message);
 
     let message_body = message.body().unwrap_or("(empty)");
@@ -152,7 +161,7 @@ async fn process_message(
         shell_config,
         working_dir,
     )
-    .await;
+    .await
 }
 
 async fn delete_message(client: &Client, queue_url: &str, message: &Message) {
