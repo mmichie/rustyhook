@@ -2,11 +2,9 @@ use crate::command_executor::execute_shell_command_with_context;
 use crate::config::{RetryConfig, ShellConfig};
 use crate::event::Event;
 use crate::event_bus::EventBus;
+use aws_sdk_sqs::types::Message;
+use aws_sdk_sqs::Client;
 use log::{debug, error, info, warn};
-use rusoto_core::credential::EnvironmentProvider;
-use rusoto_core::{HttpClient, Region};
-use rusoto_sqs::{DeleteMessageRequest, Message, ReceiveMessageRequest, Sqs, SqsClient};
-use std::env;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{sleep, Duration};
@@ -29,21 +27,8 @@ pub async fn sqs_poller(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Initializing SQS poller for queue: {}", queue_url);
 
-    let aws_region: Region = match env::var("AWS_REGION").map(|region| region.parse::<Region>()) {
-        Ok(Ok(region)) => region,
-        Ok(Err(_)) => {
-            error!("Invalid AWS region format");
-            return Err("Invalid AWS region".into());
-        }
-        Err(_) => {
-            error!("AWS_REGION environment variable not set");
-            return Err("AWS_REGION not set".into());
-        }
-    };
-
-    let credentials_provider: EnvironmentProvider = EnvironmentProvider::default();
-    let client: SqsClient =
-        SqsClient::new_with(HttpClient::new()?, credentials_provider, aws_region);
+    let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let client = Client::new(&config);
 
     loop {
         tokio::select! {
@@ -58,9 +43,9 @@ pub async fn sqs_poller(
 
                             // Forward event if configured
                             if !forward_to.is_empty() {
-                                let message_body = message.body.as_deref().unwrap_or("");
-                                let message_id = message.message_id.as_deref().unwrap_or("");
-                                let receipt_handle = message.receipt_handle.as_deref().unwrap_or("");
+                                let message_body = message.body().unwrap_or("");
+                                let message_id = message.message_id().unwrap_or("");
+                                let receipt_handle = message.receipt_handle().unwrap_or("");
 
                                 let event = Event::from_sqs(
                                     &handler_name,
@@ -123,15 +108,15 @@ pub async fn sqs_poller(
     Ok(())
 }
 
-async fn poll_sqs_messages(client: &SqsClient, queue_url: &str) -> Option<Vec<Message>> {
-    let request = ReceiveMessageRequest {
-        queue_url: queue_url.to_string(),
-        wait_time_seconds: Some(20),
-        max_number_of_messages: Some(10),
-        ..Default::default()
-    };
-
-    match client.receive_message(request).await {
+async fn poll_sqs_messages(client: &Client, queue_url: &str) -> Option<Vec<Message>> {
+    match client
+        .receive_message()
+        .queue_url(queue_url)
+        .wait_time_seconds(20)
+        .max_number_of_messages(10)
+        .send()
+        .await
+    {
         Ok(response) => {
             info!("Successfully polled messages");
             response.messages
@@ -154,8 +139,8 @@ async fn process_message(
 ) {
     info!("Processing message: {:?}", message);
 
-    let message_body = message.body.as_deref().unwrap_or("(empty)");
-    let message_id = message.message_id.as_deref().unwrap_or("(no id)");
+    let message_body = message.body().unwrap_or("(empty)");
+    let message_id = message.message_id().unwrap_or("(no id)");
     let context = format!("Message ID: {}, Body: {}", message_id, message_body);
 
     execute_shell_command_with_context(
@@ -170,14 +155,15 @@ async fn process_message(
     .await;
 }
 
-async fn delete_message(client: &SqsClient, queue_url: &str, message: &Message) {
-    if let Some(receipt_handle) = &message.receipt_handle {
-        let delete_request = DeleteMessageRequest {
-            queue_url: queue_url.to_string(),
-            receipt_handle: receipt_handle.to_string(),
-        };
-
-        match client.delete_message(delete_request).await {
+async fn delete_message(client: &Client, queue_url: &str, message: &Message) {
+    if let Some(receipt_handle) = message.receipt_handle() {
+        match client
+            .delete_message()
+            .queue_url(queue_url)
+            .receipt_handle(receipt_handle)
+            .send()
+            .await
+        {
             Ok(_) => info!("Message deleted successfully."),
             Err(e) => error!("Error deleting message: {}", e),
         }

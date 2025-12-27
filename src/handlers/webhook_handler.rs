@@ -161,10 +161,7 @@ async fn handle_webhook(
                     debug!("Authentication successful for webhook at {}", state.path);
                 }
                 Some(_) => {
-                    warn!(
-                        "Invalid auth token provided for webhook at {}",
-                        state.path
-                    );
+                    warn!("Invalid auth token provided for webhook at {}", state.path);
                     return Ok(Response::builder()
                         .status(StatusCode::UNAUTHORIZED)
                         .body(Full::new(Bytes::from("Unauthorized")))
