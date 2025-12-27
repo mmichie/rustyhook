@@ -15,6 +15,24 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 
+/// Constant-time string comparison to prevent timing attacks.
+/// Returns true if both strings are equal, comparing all bytes
+/// regardless of where differences occur.
+fn constant_time_compare(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+
+    let mut result: u8 = 0;
+    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
 /// Shared state for webhook request handling
 struct WebhookState {
     path: String,
@@ -157,7 +175,7 @@ async fn handle_webhook(
                 .and_then(|v| v.to_str().ok());
 
             match provided_token {
-                Some(token) if token == expected_token => {
+                Some(token) if constant_time_compare(token, expected_token) => {
                     debug!("Authentication successful for webhook at {}", state.path);
                 }
                 Some(_) => {
@@ -595,5 +613,24 @@ mod tests {
         // Shutdown
         let _ = shutdown_tx.send(());
         let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[test]
+    fn test_constant_time_compare() {
+        // Equal strings
+        assert!(constant_time_compare("secret", "secret"));
+        assert!(constant_time_compare("", ""));
+        assert!(constant_time_compare("a", "a"));
+
+        // Different strings of same length
+        assert!(!constant_time_compare("secret", "secreT"));
+        assert!(!constant_time_compare("aaaaaa", "aaaaab"));
+        assert!(!constant_time_compare("a", "b"));
+
+        // Different lengths
+        assert!(!constant_time_compare("secret", "secrets"));
+        assert!(!constant_time_compare("secrets", "secret"));
+        assert!(!constant_time_compare("", "a"));
+        assert!(!constant_time_compare("a", ""));
     }
 }
