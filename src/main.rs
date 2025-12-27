@@ -133,7 +133,7 @@ struct CliArgs {
 
 fn parse_cli_args() -> CliArgs {
     let matches: clap::ArgMatches = Command::new("rustyhook")
-        .version("0.0.1")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Matt Michie")
         .about("Event-driven automation tool")
         .arg(
