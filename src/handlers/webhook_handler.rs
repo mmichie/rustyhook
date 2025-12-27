@@ -2,7 +2,7 @@ use crate::command_executor::execute_shell_command_with_context;
 use crate::config::{RetryConfig, ShellConfig};
 use crate::event::Event;
 use crate::event_bus::EventBus;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -167,7 +167,11 @@ async fn handle_webhook(
     state: Arc<WebhookState>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if req.uri().path() == state.path {
-        // Check authentication if configured
+        // Extract method and URI before consuming the request
+        let method = req.method().to_string();
+        let uri = req.uri().to_string();
+
+        // Check authentication if configured (before consuming body)
         if let Some(expected_token) = &state.auth_token {
             let provided_token = req
                 .headers()
@@ -198,12 +202,23 @@ async fn handle_webhook(
             }
         }
 
+        // Read request body
+        let body = match req.collect().await {
+            Ok(collected) => String::from_utf8_lossy(&collected.to_bytes()).to_string(),
+            Err(e) => {
+                warn!("Failed to read request body: {}", e);
+                String::new()
+            }
+        };
+
         // Process the webhook request
         info!("Webhook received at {}", state.path);
 
-        let method = req.method().to_string();
-        let uri = req.uri().to_string();
-        let context = format!("Method: {}, URI: {}", method, uri);
+        let context = if body.is_empty() {
+            format!("Method: {}, URI: {}", method, uri)
+        } else {
+            format!("Method: {}, URI: {}, Body: {}", method, uri, body)
+        };
 
         // Execute the configured shell command
         execute_shell_command_with_context(
@@ -219,12 +234,7 @@ async fn handle_webhook(
 
         // Forward event if configured
         if !state.forward_to.is_empty() {
-            let event = Event::from_webhook(
-                &state.handler_name,
-                &method,
-                &uri,
-                "", // Body would require reading the incoming body
-            );
+            let event = Event::from_webhook(&state.handler_name, &method, &uri, &body);
 
             for target in &state.forward_to {
                 if let Err(e) = state.event_bus.send(target, event.clone()) {
