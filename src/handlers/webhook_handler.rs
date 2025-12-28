@@ -11,9 +11,11 @@ use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 /// Constant-time string comparison to prevent timing attacks.
 /// Returns true if both strings are equal, comparing all bytes
@@ -33,6 +35,70 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
     result == 0
 }
 
+/// Token bucket rate limiter for controlling request throughput.
+/// Allows bursting up to `capacity` requests, then refills at `rate` tokens per second.
+pub struct RateLimiter {
+    /// Maximum tokens (burst capacity)
+    capacity: u64,
+    /// Tokens added per second
+    rate: u64,
+    /// Current token count (scaled by 1000 for precision)
+    tokens: AtomicU64,
+    /// Last update timestamp in milliseconds
+    last_update: Mutex<u64>,
+}
+
+impl RateLimiter {
+    /// Create a new rate limiter.
+    /// - `rate`: requests per second allowed
+    /// - `capacity`: burst capacity (defaults to rate if None)
+    pub fn new(rate: u64, capacity: Option<u64>) -> Self {
+        let capacity = capacity.unwrap_or(rate);
+        Self {
+            capacity,
+            rate,
+            // Start with full bucket (scaled by 1000)
+            tokens: AtomicU64::new(capacity * 1000),
+            last_update: Mutex::new(Self::now_millis()),
+        }
+    }
+
+    fn now_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    /// Try to acquire a token. Returns true if allowed, false if rate limited.
+    pub async fn try_acquire(&self) -> bool {
+        let mut last_update = self.last_update.lock().await;
+        let now = Self::now_millis();
+        let elapsed = now.saturating_sub(*last_update);
+
+        // Calculate tokens to add based on elapsed time
+        // tokens_to_add = rate * (elapsed_ms / 1000), scaled by 1000 for precision
+        let tokens_to_add = self.rate * elapsed;
+
+        // Get current tokens and add refill
+        let current = self.tokens.load(Ordering::Relaxed);
+        let max_tokens = self.capacity * 1000;
+        let new_tokens = (current + tokens_to_add).min(max_tokens);
+
+        // Try to consume one token (1000 in scaled units)
+        if new_tokens >= 1000 {
+            self.tokens.store(new_tokens - 1000, Ordering::Relaxed);
+            *last_update = now;
+            true
+        } else {
+            // Update tokens even if we can't consume (for refill tracking)
+            self.tokens.store(new_tokens, Ordering::Relaxed);
+            *last_update = now;
+            false
+        }
+    }
+}
+
 /// Shared state for webhook request handling
 struct WebhookState {
     path: String,
@@ -46,6 +112,8 @@ struct WebhookState {
     forward_to: Vec<String>,
     /// Optional authentication token - if set, requests must include matching X-Auth-Token header
     auth_token: Option<String>,
+    /// Optional rate limiter - if set, requests exceeding the rate will be rejected
+    rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 // Function to start the webhook listener
@@ -64,6 +132,7 @@ pub async fn webhook_listener(
     mut event_rx: mpsc::UnboundedReceiver<Event>,
     forward_to: Vec<String>,
     auth_token: Option<String>,
+    rate_limit: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener: TcpListener = match TcpListener::bind(&addr).await {
@@ -77,6 +146,15 @@ pub async fn webhook_listener(
         }
     };
 
+    // Create rate limiter if configured
+    let rate_limiter = rate_limit.map(|rate| {
+        info!(
+            "Rate limiting enabled for webhook '{}': {} requests/second",
+            handler_name, rate
+        );
+        Arc::new(RateLimiter::new(rate, None))
+    });
+
     // Create shared state for request handlers
     let state = Arc::new(WebhookState {
         path,
@@ -89,6 +167,7 @@ pub async fn webhook_listener(
         event_bus: event_bus.clone(),
         forward_to: forward_to.clone(),
         auth_token,
+        rate_limiter,
     });
 
     loop {
@@ -167,6 +246,17 @@ async fn handle_webhook(
     state: Arc<WebhookState>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     if req.uri().path() == state.path {
+        // Check rate limit if configured
+        if let Some(ref limiter) = state.rate_limiter {
+            if !limiter.try_acquire().await {
+                warn!("Rate limit exceeded for webhook at {}", state.path);
+                return Ok(Response::builder()
+                    .status(StatusCode::TOO_MANY_REQUESTS)
+                    .body(Full::new(Bytes::from("Too Many Requests")))
+                    .unwrap());
+            }
+        }
+
         // Extract method and URI before consuming the request
         let method = req.method().to_string();
         let uri = req.uri().to_string();
@@ -302,6 +392,7 @@ mod tests {
             event_rx,
             Vec::new(),
             None, // No auth token
+            None, // No rate limit
         ));
 
         // Wait for server to start
@@ -345,6 +436,7 @@ mod tests {
             event_rx,
             Vec::new(),
             None, // No auth token
+            None, // No rate limit
         ));
 
         // Wait for server to start
@@ -387,6 +479,7 @@ mod tests {
             event_rx,
             Vec::new(),
             None, // No auth token
+            None, // No rate limit
         ));
 
         // Wait for server to start
@@ -422,6 +515,7 @@ mod tests {
             event_rx,
             Vec::new(),
             None, // No auth token
+            None, // No rate limit
         ));
 
         // Wait for server to start
@@ -467,6 +561,7 @@ mod tests {
             event_rx,
             Vec::new(),
             None, // No auth token
+            None, // No rate limit
         ));
 
         // Wait for server to start
@@ -516,6 +611,7 @@ mod tests {
             event_rx,
             Vec::new(),
             Some("secret-token".to_string()),
+            None, // No rate limit
         ));
 
         // Wait for server to start
@@ -560,6 +656,7 @@ mod tests {
             event_rx,
             Vec::new(),
             Some("secret-token".to_string()),
+            None, // No rate limit
         ));
 
         // Wait for server to start
@@ -603,6 +700,7 @@ mod tests {
             event_rx,
             Vec::new(),
             Some("secret-token".to_string()),
+            None, // No rate limit
         ));
 
         // Wait for server to start
@@ -642,5 +740,96 @@ mod tests {
         assert!(!constant_time_compare("secrets", "secret"));
         assert!(!constant_time_compare("", "a"));
         assert!(!constant_time_compare("a", ""));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_allows_requests_within_limit() {
+        let limiter = RateLimiter::new(10, None); // 10 requests per second
+
+        // Should allow up to 10 requests immediately (burst capacity)
+        for _ in 0..10 {
+            assert!(limiter.try_acquire().await);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_blocks_excess_requests() {
+        let limiter = RateLimiter::new(2, Some(2)); // 2 requests per second, burst of 2
+
+        // First 2 should succeed (burst capacity)
+        assert!(limiter.try_acquire().await);
+        assert!(limiter.try_acquire().await);
+
+        // Third should fail (no tokens left)
+        assert!(!limiter.try_acquire().await);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_refills_over_time() {
+        let limiter = RateLimiter::new(10, Some(1)); // 10/sec rate, 1 burst
+
+        // Use the one token
+        assert!(limiter.try_acquire().await);
+        assert!(!limiter.try_acquire().await);
+
+        // Wait 150ms for refill (should get at least 1 token at 10/sec)
+        sleep(Duration::from_millis(150)).await;
+
+        // Should have refilled
+        assert!(limiter.try_acquire().await);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_rate_limit_returns_429() {
+        let port = find_available_port().await;
+        let path = "/webhook".to_string();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            path.clone(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            None,                // No auth token
+            Some(2),             // Rate limit: 2 requests per second
+        ));
+
+        // Wait for server to start
+        sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+
+        // First 2 requests should succeed (burst capacity)
+        for _ in 0..2 {
+            let response = client
+                .get(format!("http://127.0.0.1:{}/webhook", port))
+                .send()
+                .await
+                .expect("Failed to send request");
+            assert_eq!(response.status(), 200);
+        }
+
+        // Third request should be rate limited
+        let response = client
+            .get(format!("http://127.0.0.1:{}/webhook", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(response.status(), 429);
+        assert_eq!(response.text().await.unwrap(), "Too Many Requests");
+
+        // Shutdown
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
     }
 }

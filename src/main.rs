@@ -282,6 +282,7 @@ fn initialize_webhook_handler(
         let working_dir = handler_config.working_dir.clone();
         let forward_to = handler_config.forward_to.clone();
         let auth_token = handler_config.options.auth_token.clone();
+        let rate_limit = handler_config.options.rate_limit;
         let shutdown_rx = shutdown_tx.subscribe();
         let webhook_future = tokio::spawn(async move {
             webhook_handler::webhook_listener(
@@ -298,6 +299,7 @@ fn initialize_webhook_handler(
                 event_rx,
                 forward_to,
                 auth_token,
+                rate_limit,
             )
             .await
             .unwrap_or_else(|e| {

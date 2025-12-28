@@ -165,6 +165,9 @@ pub struct Options {
     /// Authentication token for webhook handlers
     /// If set, requests must include this token in the X-Auth-Token header
     pub auth_token: Option<String>,
+    /// Rate limit for webhook handlers (requests per second)
+    /// If set, requests exceeding this rate will receive 429 Too Many Requests
+    pub rate_limit: Option<u64>,
     /// Debounce duration in milliseconds for filesystem events (default: 100ms)
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
