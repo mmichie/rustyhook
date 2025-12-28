@@ -114,6 +114,8 @@ struct WebhookState {
     auth_token: Option<String>,
     /// Optional rate limiter - if set, requests exceeding the rate will be rejected
     rate_limiter: Option<Arc<RateLimiter>>,
+    /// Optional health check path - requests to this path return 200 OK without auth/rate limit
+    health_path: Option<String>,
 }
 
 // Function to start the webhook listener
@@ -133,6 +135,7 @@ pub async fn webhook_listener(
     forward_to: Vec<String>,
     auth_token: Option<String>,
     rate_limit: Option<u64>,
+    health_path: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener: TcpListener = match TcpListener::bind(&addr).await {
@@ -155,6 +158,14 @@ pub async fn webhook_listener(
         Arc::new(RateLimiter::new(rate, None))
     });
 
+    // Log health check path if configured
+    if let Some(ref hp) = health_path {
+        info!(
+            "Health check enabled for webhook '{}' at path: {}",
+            handler_name, hp
+        );
+    }
+
     // Create shared state for request handlers
     let state = Arc::new(WebhookState {
         path,
@@ -168,6 +179,7 @@ pub async fn webhook_listener(
         forward_to: forward_to.clone(),
         auth_token,
         rate_limiter,
+        health_path,
     });
 
     loop {
@@ -245,6 +257,14 @@ async fn handle_webhook(
     req: Request<hyper::body::Incoming>,
     state: Arc<WebhookState>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    // Check for health check path first (no auth, no rate limit)
+    if let Some(ref health_path) = state.health_path {
+        if req.uri().path() == health_path {
+            debug!("Health check request at {}", health_path);
+            return Ok(Response::new(Full::new(Bytes::from("OK"))));
+        }
+    }
+
     if req.uri().path() == state.path {
         // Check rate limit if configured
         if let Some(ref limiter) = state.rate_limiter {
@@ -393,6 +413,7 @@ mod tests {
             Vec::new(),
             None, // No auth token
             None, // No rate limit
+            None, // No health path
         ));
 
         // Wait for server to start
@@ -437,6 +458,7 @@ mod tests {
             Vec::new(),
             None, // No auth token
             None, // No rate limit
+            None, // No health path
         ));
 
         // Wait for server to start
@@ -480,6 +502,7 @@ mod tests {
             Vec::new(),
             None, // No auth token
             None, // No rate limit
+            None, // No health path
         ));
 
         // Wait for server to start
@@ -516,6 +539,7 @@ mod tests {
             Vec::new(),
             None, // No auth token
             None, // No rate limit
+            None, // No health path
         ));
 
         // Wait for server to start
@@ -562,6 +586,7 @@ mod tests {
             Vec::new(),
             None, // No auth token
             None, // No rate limit
+            None, // No health path
         ));
 
         // Wait for server to start
@@ -612,6 +637,7 @@ mod tests {
             Vec::new(),
             Some("secret-token".to_string()),
             None, // No rate limit
+            None, // No health path
         ));
 
         // Wait for server to start
@@ -657,6 +683,7 @@ mod tests {
             Vec::new(),
             Some("secret-token".to_string()),
             None, // No rate limit
+            None, // No health path
         ));
 
         // Wait for server to start
@@ -701,6 +728,7 @@ mod tests {
             Vec::new(),
             Some("secret-token".to_string()),
             None, // No rate limit
+            None, // No health path
         ));
 
         // Wait for server to start
@@ -800,8 +828,9 @@ mod tests {
             event_bus,
             event_rx,
             Vec::new(),
-            None,                // No auth token
-            Some(2),             // Rate limit: 2 requests per second
+            None,    // No auth token
+            Some(2), // Rate limit: 2 requests per second
+            None,    // No health path
         ));
 
         // Wait for server to start
@@ -878,6 +907,7 @@ mod tests {
             Vec::new(), // No further forwarding
             None,
             None,
+            None, // No health path
         ));
 
         // Start source webhook handler (forwards to target)
@@ -897,6 +927,7 @@ mod tests {
             vec!["webhook-target".to_string()], // Forward to target
             None,
             None,
+            None, // No health path
         ));
 
         // Wait for servers to start
@@ -958,6 +989,7 @@ mod tests {
             Vec::new(), // End of chain
             None,
             None,
+            None, // No health path
         ));
 
         // Start handler B (forwards to C)
@@ -977,6 +1009,7 @@ mod tests {
             vec!["handler-c".to_string()],
             None,
             None,
+            None, // No health path
         ));
 
         // Start handler A (forwards to B)
@@ -996,6 +1029,7 @@ mod tests {
             vec!["handler-b".to_string()],
             None,
             None,
+            None, // No health path
         ));
 
         sleep(Duration::from_millis(200)).await;
@@ -1058,6 +1092,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            None, // No health path
         ));
 
         // Start target C
@@ -1077,6 +1112,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            None, // No health path
         ));
 
         // Start source (forwards to both B and C)
@@ -1096,6 +1132,7 @@ mod tests {
             vec!["target-b".to_string(), "target-c".to_string()],
             None,
             None,
+            None, // No health path
         ));
 
         sleep(Duration::from_millis(200)).await;
@@ -1124,5 +1161,151 @@ mod tests {
             marker_c.exists(),
             "Target C should have received forwarded event"
         );
+    }
+
+    // ============== Health Check Tests ==============
+
+    #[tokio::test]
+    async fn test_health_check_returns_200() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/webhook".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            None,                             // No auth token
+            None,                             // No rate limit
+            Some("/health".to_string()),     // Health check path
+        ));
+
+        sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/health", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "OK");
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_health_check_bypasses_auth() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/webhook".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            Some("secret-token".to_string()), // Auth required for webhook
+            None,
+            Some("/health".to_string()),     // Health check path
+        ));
+
+        sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+
+        // Health check should work WITHOUT auth token
+        let response = client
+            .get(format!("http://127.0.0.1:{}/health", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "OK");
+
+        // Webhook should still require auth
+        let response = client
+            .get(format!("http://127.0.0.1:{}/webhook", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 401);
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_health_check_bypasses_rate_limit() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/webhook".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            None,
+            Some(1), // Very low rate limit: 1 request/sec
+            Some("/health".to_string()),
+        ));
+
+        sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+
+        // Use up the rate limit on the webhook path
+        let _ = client
+            .get(format!("http://127.0.0.1:{}/webhook", port))
+            .send()
+            .await;
+
+        // Health check should STILL work even after rate limit exhausted
+        for _ in 0..5 {
+            let response = client
+                .get(format!("http://127.0.0.1:{}/health", port))
+                .send()
+                .await
+                .expect("Failed to send request");
+
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.text().await.unwrap(), "OK");
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
     }
 }

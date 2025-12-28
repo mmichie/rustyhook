@@ -168,6 +168,9 @@ pub struct Options {
     /// Rate limit for webhook handlers (requests per second)
     /// If set, requests exceeding this rate will receive 429 Too Many Requests
     pub rate_limit: Option<u64>,
+    /// Health check path for webhook handlers (e.g., "/health")
+    /// If set, requests to this path return 200 OK without auth or rate limiting
+    pub health_path: Option<String>,
     /// Debounce duration in milliseconds for filesystem events (default: 100ms)
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
