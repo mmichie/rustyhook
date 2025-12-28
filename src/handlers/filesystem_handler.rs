@@ -487,4 +487,373 @@ mod tests {
             &exclude
         ));
     }
+
+    // ============== Integration Tests ==============
+
+    use crate::config::{RetryConfig, ShellConfig};
+    use crate::event_bus::EventBus;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::fs;
+    use tokio::sync::broadcast;
+    use tokio::time::{timeout, Duration};
+
+    fn create_test_deps() -> (Arc<EventBus>, mpsc::UnboundedReceiver<Event>) {
+        let event_bus = Arc::new(EventBus::new());
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(tx);
+        (event_bus, rx)
+    }
+
+    async fn wait_for_marker(path: &std::path::Path, timeout_secs: u64) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        while tokio::time::Instant::now() < deadline {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn test_filesystem_file_creation_triggers_command() {
+        let watch_dir = TempDir::new().expect("Failed to create watch dir");
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let marker_path = marker_dir.path().join("executed.marker");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let shell_command = format!("touch '{}'", marker_path.to_string_lossy());
+        let watch_path = watch_dir.path().to_string_lossy().to_string();
+
+        let handler = tokio::spawn(filesystem_watcher(
+            watch_path,
+            shell_command,
+            "test-fs-create".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            50,
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        // Allow watcher to initialize
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Create a file in watched directory
+        let test_file = watch_dir.path().join("test.txt");
+        fs::write(&test_file, "test content")
+            .await
+            .expect("Failed to write test file");
+
+        // Wait for marker file
+        let executed = wait_for_marker(&marker_path, 3).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handler).await;
+
+        assert!(
+            executed,
+            "Command should have been executed on file creation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filesystem_file_modification_triggers_command() {
+        let watch_dir = TempDir::new().expect("Failed to create watch dir");
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let marker_path = marker_dir.path().join("modified.marker");
+
+        // Create file before starting watcher
+        let test_file = watch_dir.path().join("existing.txt");
+        fs::write(&test_file, "initial content")
+            .await
+            .expect("Failed to write initial file");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let shell_command = format!("touch '{}'", marker_path.to_string_lossy());
+        let watch_path = watch_dir.path().to_string_lossy().to_string();
+
+        let handler = tokio::spawn(filesystem_watcher(
+            watch_path,
+            shell_command,
+            "test-fs-modify".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            50,
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Modify the existing file
+        fs::write(&test_file, "modified content")
+            .await
+            .expect("Failed to modify file");
+
+        let executed = wait_for_marker(&marker_path, 3).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handler).await;
+
+        assert!(
+            executed,
+            "Command should have been executed on file modification"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filesystem_include_pattern_filters_events() {
+        let watch_dir = TempDir::new().expect("Failed to create watch dir");
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let counter_path = marker_dir.path().join("counter");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let shell_command = format!("echo 'triggered' >> '{}'", counter_path.to_string_lossy());
+
+        let handler = tokio::spawn(filesystem_watcher(
+            watch_dir.path().to_string_lossy().to_string(),
+            shell_command,
+            "test-include-filter".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            50,
+            vec!["*.rs".to_string()], // Only watch .rs files
+            Vec::new(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Create .txt file (should be filtered out)
+        let txt_file = watch_dir.path().join("ignored.txt");
+        fs::write(&txt_file, "ignored")
+            .await
+            .expect("Failed to write txt file");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Create .rs file (should trigger)
+        let rs_file = watch_dir.path().join("included.rs");
+        fs::write(&rs_file, "fn main() {}")
+            .await
+            .expect("Failed to write rs file");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handler).await;
+
+        let count = if counter_path.exists() {
+            fs::read_to_string(&counter_path)
+                .await
+                .map(|s| s.lines().count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        assert_eq!(
+            count, 1,
+            "Only .rs file should trigger (got {} triggers)",
+            count
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filesystem_exclude_pattern_filters_events() {
+        let watch_dir = TempDir::new().expect("Failed to create watch dir");
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let counter_path = marker_dir.path().join("counter");
+
+        // Create target subdirectory BEFORE starting watcher
+        let target_dir = watch_dir.path().join("target");
+        std::fs::create_dir(&target_dir).expect("Failed to create target dir");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let shell_command = format!("echo 'triggered' >> '{}'", counter_path.to_string_lossy());
+
+        let handler = tokio::spawn(filesystem_watcher(
+            watch_dir.path().to_string_lossy().to_string(),
+            shell_command,
+            "test-exclude-filter".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            50,
+            Vec::new(),
+            vec!["**/target/**".to_string()], // Exclude target directory (matches full paths)
+        ));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Create file in target (should be excluded)
+        let excluded = target_dir.join("excluded.txt");
+        fs::write(&excluded, "excluded")
+            .await
+            .expect("Failed to write excluded file");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Create file in root (should trigger)
+        let included = watch_dir.path().join("included.txt");
+        fs::write(&included, "included")
+            .await
+            .expect("Failed to write included file");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handler).await;
+
+        let count = if counter_path.exists() {
+            fs::read_to_string(&counter_path)
+                .await
+                .map(|s| s.lines().count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        assert_eq!(
+            count, 1,
+            "Excluded files should not trigger (got {} triggers)",
+            count
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filesystem_debounce_consolidates_events() {
+        let watch_dir = TempDir::new().expect("Failed to create watch dir");
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let counter_path = marker_dir.path().join("counter");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let shell_command = format!("echo 'triggered' >> '{}'", counter_path.to_string_lossy());
+
+        let handler = tokio::spawn(filesystem_watcher(
+            watch_dir.path().to_string_lossy().to_string(),
+            shell_command,
+            "test-debounce".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            200, // 200ms debounce
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Create multiple files in rapid succession (within debounce window)
+        for i in 0..5 {
+            let file = watch_dir.path().join(format!("file{}.txt", i));
+            fs::write(&file, format!("content{}", i))
+                .await
+                .expect("Failed to write file");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Wait for debounce + execution
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handler).await;
+
+        let count = if counter_path.exists() {
+            fs::read_to_string(&counter_path)
+                .await
+                .map(|s| s.lines().count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Should have 1-2 triggers (debounce consolidates), not 5
+        assert!(
+            count <= 2,
+            "Debounce should consolidate events (got {} triggers)",
+            count
+        );
+        assert!(count >= 1, "At least one trigger expected");
+    }
+
+    #[tokio::test]
+    async fn test_filesystem_shutdown_during_watch() {
+        let watch_dir = TempDir::new().expect("Failed to create watch dir");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(filesystem_watcher(
+            watch_dir.path().to_string_lossy().to_string(),
+            "echo 'test'".to_string(),
+            "test-shutdown".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            100,
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handler).await;
+        assert!(
+            result.is_ok(),
+            "Handler should shut down gracefully within timeout"
+        );
+    }
 }

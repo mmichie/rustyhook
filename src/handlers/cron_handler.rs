@@ -217,4 +217,148 @@ mod tests {
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok(), "Handler should shut down within timeout");
     }
+
+    // ============== Integration Tests ==============
+
+    use tempfile::TempDir;
+    use tokio::fs;
+
+    async fn wait_for_marker(path: &std::path::Path, timeout_secs: u64) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        while tokio::time::Instant::now() < deadline {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn test_cron_executes_on_schedule() {
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let marker_path = marker_dir.path().join("cron_executed.marker");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let shell_command = format!("touch '{}'", marker_path.to_string_lossy());
+
+        // "* * * * * *" fires every second
+        let handle = create_cron_handler(
+            "* * * * * *".to_string(),
+            shell_command,
+            "test-cron-exec".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+        )
+        .expect("Failed to create cron handler");
+
+        // Wait up to 3 seconds for execution (should fire within ~1s)
+        let executed = wait_for_marker(&marker_path, 3).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        assert!(executed, "Cron should have executed within 3 seconds");
+    }
+
+    #[tokio::test]
+    async fn test_cron_executes_multiple_times() {
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let counter_path = marker_dir.path().join("cron_counter");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        // Append to counter file on each execution
+        let shell_command = format!("echo 'tick' >> '{}'", counter_path.to_string_lossy());
+
+        let handle = create_cron_handler(
+            "* * * * * *".to_string(), // Every second
+            shell_command,
+            "test-cron-multi".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+        )
+        .expect("Failed to create cron handler");
+
+        // Wait ~3 seconds for multiple executions
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        let count = if counter_path.exists() {
+            fs::read_to_string(&counter_path)
+                .await
+                .map(|s| s.lines().count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Should have at least 2 executions in 3 seconds
+        assert!(count >= 2, "Expected at least 2 executions, got {}", count);
+    }
+
+    #[tokio::test]
+    async fn test_cron_handles_forwarded_events() {
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let marker_path = marker_dir.path().join("forwarded.marker");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let event_bus = Arc::new(EventBus::new());
+        let event_rx = event_bus.register("test-cron-forward").unwrap();
+
+        let shell_command = format!("touch '{}'", marker_path.to_string_lossy());
+
+        // Use a far-future cron schedule so only forwarded events trigger
+        let handle = create_cron_handler(
+            "0 0 0 1 1 * 2099".to_string(), // January 1, 2099 at midnight
+            shell_command,
+            "test-cron-forward".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus.clone(),
+            event_rx,
+            Vec::new(),
+        )
+        .expect("Failed to create cron handler");
+
+        // Give handler time to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Send forwarded event
+        let event = Event::from_filesystem("source-handler", "/tmp/test.txt", "create");
+        event_bus
+            .send("test-cron-forward", event)
+            .expect("Failed to send event");
+
+        // Wait for execution
+        let executed = wait_for_marker(&marker_path, 2).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        assert!(executed, "Forwarded event should trigger cron command");
+    }
 }

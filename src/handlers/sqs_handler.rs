@@ -180,3 +180,111 @@ async fn delete_message(client: &Client, queue_url: &str, message: &Message) {
         error!("No receipt handle found for message: {:?}", message);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{RetryConfig, ShellConfig};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio::sync::broadcast;
+    use tokio::time::Duration;
+
+    fn create_test_deps() -> (Arc<EventBus>, mpsc::UnboundedReceiver<Event>) {
+        let event_bus = Arc::new(EventBus::new());
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(tx);
+        (event_bus, rx)
+    }
+
+    async fn wait_for_marker(path: &std::path::Path, timeout_secs: u64) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        while tokio::time::Instant::now() < deadline {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn test_sqs_handler_shutdown() {
+        // This test verifies shutdown works without actually connecting to AWS
+        // The handler will fail to poll but should still respond to shutdown
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        // Use invalid URL - will fail to connect but should still handle shutdown
+        let handler = tokio::spawn(sqs_poller(
+            "https://sqs.us-east-1.amazonaws.com/000000000000/nonexistent".to_string(),
+            60, // Long poll interval so we hit shutdown first
+            "echo 'test'".to_string(),
+            "test-sqs".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+        ));
+
+        // Give it a moment to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Send shutdown
+        let _ = shutdown_tx.send(());
+
+        // Should complete within timeout
+        let result = tokio::time::timeout(Duration::from_secs(5), handler).await;
+        assert!(result.is_ok(), "SQS handler should shut down on signal");
+    }
+
+    #[tokio::test]
+    async fn test_sqs_handles_forwarded_events() {
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let marker_path = marker_dir.path().join("forwarded.marker");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let event_bus = Arc::new(EventBus::new());
+        let event_rx = event_bus.register("test-sqs").unwrap();
+
+        let shell_command = format!("touch '{}'", marker_path.to_string_lossy());
+
+        let handler = tokio::spawn(sqs_poller(
+            "https://sqs.us-east-1.amazonaws.com/000000000000/nonexistent".to_string(),
+            60, // Long poll interval so only forwarded events trigger
+            shell_command,
+            "test-sqs".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus.clone(),
+            event_rx,
+            Vec::new(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Send forwarded event
+        let event = Event::from_filesystem("source", "/tmp/test.txt", "create");
+        event_bus
+            .send("test-sqs", event)
+            .expect("Failed to send event");
+
+        // Wait for execution
+        let executed = wait_for_marker(&marker_path, 3).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(5), handler).await;
+
+        assert!(executed, "Forwarded event should trigger command");
+    }
+}

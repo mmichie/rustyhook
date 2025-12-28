@@ -832,4 +832,297 @@ mod tests {
         let _ = shutdown_tx.send(());
         let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
     }
+
+    // ============== Handler Forwarding Integration Tests ==============
+
+    use tempfile::TempDir;
+
+    async fn wait_for_marker(path: &std::path::Path, timeout_secs: u64) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        while tokio::time::Instant::now() < deadline {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn test_webhook_forwards_event_to_handler() {
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let target_marker = marker_dir.path().join("target_received.marker");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let event_bus = Arc::new(EventBus::new());
+
+        // Register both handlers with EventBus
+        let source_rx = event_bus.register("webhook-source").unwrap();
+        let target_rx = event_bus.register("webhook-target").unwrap();
+
+        // Start target webhook handler (listens for forwarded events)
+        let target_port = find_available_port().await;
+        let target_shell = format!("touch '{}'", target_marker.to_string_lossy());
+        let target_handler = tokio::spawn(webhook_listener(
+            target_port,
+            "/target".to_string(),
+            target_shell,
+            "webhook-target".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_tx.subscribe(),
+            event_bus.clone(),
+            target_rx,
+            Vec::new(), // No further forwarding
+            None,
+            None,
+        ));
+
+        // Start source webhook handler (forwards to target)
+        let source_port = find_available_port().await;
+        let source_handler = tokio::spawn(webhook_listener(
+            source_port,
+            "/source".to_string(),
+            "echo 'source executed'".to_string(),
+            "webhook-source".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_tx.subscribe(),
+            event_bus.clone(),
+            source_rx,
+            vec!["webhook-target".to_string()], // Forward to target
+            None,
+            None,
+        ));
+
+        // Wait for servers to start
+        sleep(Duration::from_millis(200)).await;
+
+        // Trigger source webhook
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/source", source_port))
+            .body("test payload")
+            .send()
+            .await
+            .expect("Failed to send webhook request");
+
+        assert_eq!(response.status(), 200);
+
+        // Wait for forwarded event to execute target command
+        let executed = wait_for_marker(&target_marker, 3).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), source_handler).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), target_handler).await;
+
+        assert!(
+            executed,
+            "Forwarded event should trigger target handler command"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chain_forwarding() {
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let marker_a = marker_dir.path().join("a.marker");
+        let marker_b = marker_dir.path().join("b.marker");
+        let marker_c = marker_dir.path().join("c.marker");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let event_bus = Arc::new(EventBus::new());
+
+        // Register all handlers
+        let rx_a = event_bus.register("handler-a").unwrap();
+        let rx_b = event_bus.register("handler-b").unwrap();
+        let rx_c = event_bus.register("handler-c").unwrap();
+
+        // Start handler C (end of chain, no forwarding)
+        let port_c = find_available_port().await;
+        let handler_c = tokio::spawn(webhook_listener(
+            port_c,
+            "/c".to_string(),
+            format!("touch '{}'", marker_c.to_string_lossy()),
+            "handler-c".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_tx.subscribe(),
+            event_bus.clone(),
+            rx_c,
+            Vec::new(), // End of chain
+            None,
+            None,
+        ));
+
+        // Start handler B (forwards to C)
+        let port_b = find_available_port().await;
+        let handler_b = tokio::spawn(webhook_listener(
+            port_b,
+            "/b".to_string(),
+            format!("touch '{}'", marker_b.to_string_lossy()),
+            "handler-b".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_tx.subscribe(),
+            event_bus.clone(),
+            rx_b,
+            vec!["handler-c".to_string()],
+            None,
+            None,
+        ));
+
+        // Start handler A (forwards to B)
+        let port_a = find_available_port().await;
+        let handler_a = tokio::spawn(webhook_listener(
+            port_a,
+            "/a".to_string(),
+            format!("touch '{}'", marker_a.to_string_lossy()),
+            "handler-a".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_tx.subscribe(),
+            event_bus.clone(),
+            rx_a,
+            vec!["handler-b".to_string()],
+            None,
+            None,
+        ));
+
+        sleep(Duration::from_millis(200)).await;
+
+        // Trigger handler A
+        let client = reqwest::Client::new();
+        client
+            .post(format!("http://127.0.0.1:{}/a", port_a))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        // Wait for chain to complete
+        sleep(Duration::from_millis(500)).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler_a).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler_b).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler_c).await;
+
+        // All three markers should exist
+        assert!(marker_a.exists(), "Handler A should have executed");
+        assert!(
+            marker_b.exists(),
+            "Handler B should have received forwarded event"
+        );
+        assert!(
+            marker_c.exists(),
+            "Handler C should have received forwarded event"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fanout_forwarding() {
+        let marker_dir = TempDir::new().expect("Failed to create marker dir");
+        let marker_b = marker_dir.path().join("b.marker");
+        let marker_c = marker_dir.path().join("c.marker");
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let event_bus = Arc::new(EventBus::new());
+
+        let rx_a = event_bus.register("source").unwrap();
+        let rx_b = event_bus.register("target-b").unwrap();
+        let rx_c = event_bus.register("target-c").unwrap();
+
+        // Start target B
+        let port_b = find_available_port().await;
+        let handler_b = tokio::spawn(webhook_listener(
+            port_b,
+            "/b".to_string(),
+            format!("touch '{}'", marker_b.to_string_lossy()),
+            "target-b".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_tx.subscribe(),
+            event_bus.clone(),
+            rx_b,
+            Vec::new(),
+            None,
+            None,
+        ));
+
+        // Start target C
+        let port_c = find_available_port().await;
+        let handler_c = tokio::spawn(webhook_listener(
+            port_c,
+            "/c".to_string(),
+            format!("touch '{}'", marker_c.to_string_lossy()),
+            "target-c".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_tx.subscribe(),
+            event_bus.clone(),
+            rx_c,
+            Vec::new(),
+            None,
+            None,
+        ));
+
+        // Start source (forwards to both B and C)
+        let port_a = find_available_port().await;
+        let handler_a = tokio::spawn(webhook_listener(
+            port_a,
+            "/a".to_string(),
+            "echo 'source'".to_string(),
+            "source".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_tx.subscribe(),
+            event_bus.clone(),
+            rx_a,
+            vec!["target-b".to_string(), "target-c".to_string()],
+            None,
+            None,
+        ));
+
+        sleep(Duration::from_millis(200)).await;
+
+        // Trigger source
+        let client = reqwest::Client::new();
+        client
+            .post(format!("http://127.0.0.1:{}/a", port_a))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        sleep(Duration::from_millis(500)).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler_a).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler_b).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler_c).await;
+
+        // Both targets should receive the forwarded event
+        assert!(
+            marker_b.exists(),
+            "Target B should have received forwarded event"
+        );
+        assert!(
+            marker_c.exists(),
+            "Target C should have received forwarded event"
+        );
+    }
 }
