@@ -16,6 +16,7 @@ When any of these events occur, RustyHook executes your configured shell command
 
 - **Unified Configuration** - Single YAML file for all event handlers
 - **Authentication** - Optional token-based auth for webhook endpoints
+- **HMAC Verification** - GitHub-style signature verification for webhooks
 - **Rate Limiting** - Protect webhooks from abuse with configurable limits
 - **Retry Logic** - Configurable retry with exponential backoff
 - **Event Forwarding** - Chain handlers together for complex workflows
@@ -130,6 +131,8 @@ rustyhook -c config.yml
 | `auth_token` | string | none | Required X-Auth-Token header value |
 | `rate_limit` | integer | none | Max requests per second |
 | `health_path` | string | none | Health check path (bypasses auth and rate limit) |
+| `hmac_secret` | string | none | Shared secret for HMAC signature verification |
+| `hmac_header` | string | X-Hub-Signature-256 | Header containing the HMAC signature |
 
 ### Filesystem Options
 
