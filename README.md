@@ -63,6 +63,7 @@ handlers:
       path: "/deploy"
       auth_token: "secret-token"    # Optional: require X-Auth-Token header
       rate_limit: 10                 # Optional: max 10 requests/second
+      health_path: "/health"         # Optional: health check endpoint
     shell: "cd /app && git pull && ./deploy.sh"
     timeout: 300                     # Command timeout in seconds
     working_dir: "/app"              # Working directory for command
@@ -128,6 +129,7 @@ rustyhook -c config.yml
 | `path` | string | required | URL path to handle |
 | `auth_token` | string | none | Required X-Auth-Token header value |
 | `rate_limit` | integer | none | Max requests per second |
+| `health_path` | string | none | Health check path (bypasses auth and rate limit) |
 
 ### Filesystem Options
 
