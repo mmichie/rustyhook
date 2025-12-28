@@ -41,6 +41,7 @@ impl std::error::Error for EventBusError {}
 
 /// Result of sending an event to a handler
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SendResult {
     pub handler: String,
     pub result: Result<(), EventBusError>,
@@ -112,6 +113,7 @@ impl EventBus {
     ///
     /// After unregistration, events can no longer be sent to this handler.
     /// Returns true if the handler was registered and removed, false if not found.
+    #[allow(dead_code)]
     pub fn unregister(&self, handler_id: &str) -> bool {
         let mut senders = self.senders.write().unwrap();
         let removed = senders.remove(handler_id).is_some();
@@ -157,6 +159,7 @@ impl EventBus {
     ///
     /// Returns a vector of results, one for each target handler.
     /// This allows callers to handle partial failures.
+    #[allow(dead_code)]
     pub fn send_many(&self, targets: &[String], event: Event) -> Vec<SendResult> {
         targets
             .iter()
@@ -171,6 +174,7 @@ impl EventBus {
     }
 
     /// Check if a handler is registered
+    #[allow(dead_code)]
     pub fn is_registered(&self, handler_id: &str) -> bool {
         let senders = self.senders.read().unwrap();
         senders.contains_key(handler_id)
@@ -183,6 +187,7 @@ impl EventBus {
     }
 
     /// Get the names of all registered handlers
+    #[allow(dead_code)]
     pub fn registered_handlers(&self) -> Vec<String> {
         let senders = self.senders.read().unwrap();
         senders.keys().cloned().collect()

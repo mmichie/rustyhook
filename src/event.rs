@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Common event keys used across different event types
+#[allow(dead_code)]
 pub mod keys {
     // Common keys
     pub const SOURCE_HANDLER: &str = "source_handler";
@@ -99,6 +100,7 @@ impl Event {
     }
 
     /// Add multiple key-value pairs to the event data
+    #[allow(dead_code)]
     pub fn with_data_map(mut self, data: HashMap<String, String>) -> Self {
         self.data.extend(data);
         self
@@ -129,6 +131,7 @@ impl Event {
     }
 
     /// Create an event from a webhook request with headers
+    #[allow(dead_code)]
     pub fn from_webhook_with_headers(
         handler_name: impl Into<String>,
         method: impl Into<String>,
@@ -167,6 +170,7 @@ impl Event {
     ///
     /// The original event's data is preserved, and the event_type
     /// is changed to Forwarded while keeping the original source_handler.
+    #[allow(dead_code)]
     pub fn forwarded(original: &Event) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -178,16 +182,19 @@ impl Event {
     }
 
     /// Serialize the event to JSON
+    #[allow(dead_code)]
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
 
     /// Serialize the event to pretty-printed JSON
+    #[allow(dead_code)]
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
     /// Get a data value by key
+    #[allow(dead_code)]
     pub fn get(&self, key: &str) -> Option<&String> {
         self.data.get(key)
     }
