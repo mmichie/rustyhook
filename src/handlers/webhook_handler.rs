@@ -2,6 +2,7 @@ use crate::command_executor::execute_shell_command_with_context;
 use crate::config::{RetryConfig, ShellConfig};
 use crate::event::Event;
 use crate::event_bus::EventBus;
+use hmac::{Hmac, Mac};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -9,6 +10,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};
+use sha2::Sha256;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +18,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, Mutex};
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Constant-time string comparison to prevent timing attacks.
 /// Returns true if both strings are equal, comparing all bytes
@@ -33,6 +37,42 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
         result |= x ^ y;
     }
     result == 0
+}
+
+/// Verify HMAC signature for webhook payloads.
+/// Supports GitHub-style signatures in format "sha256=<hex-encoded-hmac>".
+/// Returns true if the signature is valid.
+fn verify_hmac_signature(body: &[u8], secret: &str, provided_signature: &str) -> bool {
+    // Parse the signature format: "sha256=<hex>"
+    let parts: Vec<&str> = provided_signature.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        warn!("Invalid HMAC signature format: missing algorithm prefix");
+        return false;
+    }
+
+    let algorithm = parts[0];
+    let provided_hex = parts[1];
+
+    // Only support sha256 for now
+    if algorithm != "sha256" {
+        warn!("Unsupported HMAC algorithm: {}", algorithm);
+        return false;
+    }
+
+    // Compute HMAC-SHA256
+    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
+        Ok(m) => m,
+        Err(e) => {
+            error!("Failed to create HMAC: {}", e);
+            return false;
+        }
+    };
+    mac.update(body);
+    let computed = mac.finalize().into_bytes();
+    let computed_hex = hex::encode(computed);
+
+    // Use constant-time comparison to prevent timing attacks
+    constant_time_compare(&computed_hex, provided_hex)
 }
 
 /// Token bucket rate limiter for controlling request throughput.
@@ -116,6 +156,10 @@ struct WebhookState {
     rate_limiter: Option<Arc<RateLimiter>>,
     /// Optional health check path - requests to this path return 200 OK without auth/rate limit
     health_path: Option<String>,
+    /// Optional HMAC secret for signature verification
+    hmac_secret: Option<String>,
+    /// Header name for HMAC signature (e.g., "X-Hub-Signature-256")
+    hmac_header: String,
 }
 
 // Function to start the webhook listener
@@ -136,6 +180,8 @@ pub async fn webhook_listener(
     auth_token: Option<String>,
     rate_limit: Option<u64>,
     health_path: Option<String>,
+    hmac_secret: Option<String>,
+    hmac_header: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener: TcpListener = match TcpListener::bind(&addr).await {
@@ -166,6 +212,17 @@ pub async fn webhook_listener(
         );
     }
 
+    // Resolve HMAC header with default
+    let resolved_hmac_header = hmac_header.unwrap_or_else(|| "X-Hub-Signature-256".to_string());
+
+    // Log HMAC configuration if enabled
+    if hmac_secret.is_some() {
+        info!(
+            "HMAC signature verification enabled for webhook '{}' using header: {}",
+            handler_name, resolved_hmac_header
+        );
+    }
+
     // Create shared state for request handlers
     let state = Arc::new(WebhookState {
         path,
@@ -180,6 +237,8 @@ pub async fn webhook_listener(
         auth_token,
         rate_limiter,
         health_path,
+        hmac_secret,
+        hmac_header: resolved_hmac_header,
     });
 
     loop {
@@ -277,18 +336,63 @@ async fn handle_webhook(
             }
         }
 
-        // Extract method and URI before consuming the request
+        // Extract method, URI, and headers before consuming the request
         let method = req.method().to_string();
         let uri = req.uri().to_string();
 
-        // Check authentication if configured (before consuming body)
-        if let Some(expected_token) = &state.auth_token {
-            let provided_token = req
-                .headers()
-                .get("X-Auth-Token")
-                .and_then(|v| v.to_str().ok());
+        // Extract auth token header before consuming body
+        let provided_auth_token = req
+            .headers()
+            .get("X-Auth-Token")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
 
-            match provided_token {
+        // Extract HMAC signature header before consuming body
+        let provided_signature = req
+            .headers()
+            .get(state.hmac_header.as_str())
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        // Read request body (needed for HMAC verification)
+        let body_bytes = match req.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) => {
+                warn!("Failed to read request body: {}", e);
+                Bytes::new()
+            }
+        };
+
+        // Verify HMAC signature if configured
+        if let Some(ref secret) = state.hmac_secret {
+            match &provided_signature {
+                Some(sig) => {
+                    if verify_hmac_signature(&body_bytes, secret, sig) {
+                        debug!("HMAC signature verified for webhook at {}", state.path);
+                    } else {
+                        warn!("Invalid HMAC signature for webhook at {}", state.path);
+                        return Ok(Response::builder()
+                            .status(StatusCode::UNAUTHORIZED)
+                            .body(Full::new(Bytes::from("Invalid signature")))
+                            .unwrap());
+                    }
+                }
+                None => {
+                    warn!(
+                        "Missing HMAC signature for webhook at {} ({} header required)",
+                        state.path, state.hmac_header
+                    );
+                    return Ok(Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Full::new(Bytes::from("Missing signature")))
+                        .unwrap());
+                }
+            }
+        }
+
+        // Check authentication if configured
+        if let Some(expected_token) = &state.auth_token {
+            match &provided_auth_token {
                 Some(token) if constant_time_compare(token, expected_token) => {
                     debug!("Authentication successful for webhook at {}", state.path);
                 }
@@ -312,14 +416,8 @@ async fn handle_webhook(
             }
         }
 
-        // Read request body
-        let body = match req.collect().await {
-            Ok(collected) => String::from_utf8_lossy(&collected.to_bytes()).to_string(),
-            Err(e) => {
-                warn!("Failed to read request body: {}", e);
-                String::new()
-            }
-        };
+        // Convert body bytes to string for processing
+        let body = String::from_utf8_lossy(&body_bytes).to_string();
 
         // Process the webhook request
         info!("Webhook received at {}", state.path);
@@ -414,6 +512,8 @@ mod tests {
             None, // No auth token
             None, // No rate limit
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for server to start
@@ -459,6 +559,8 @@ mod tests {
             None, // No auth token
             None, // No rate limit
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for server to start
@@ -503,6 +605,8 @@ mod tests {
             None, // No auth token
             None, // No rate limit
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for server to start
@@ -540,6 +644,8 @@ mod tests {
             None, // No auth token
             None, // No rate limit
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for server to start
@@ -587,6 +693,8 @@ mod tests {
             None, // No auth token
             None, // No rate limit
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for server to start
@@ -638,6 +746,8 @@ mod tests {
             Some("secret-token".to_string()),
             None, // No rate limit
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for server to start
@@ -684,6 +794,8 @@ mod tests {
             Some("secret-token".to_string()),
             None, // No rate limit
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for server to start
@@ -729,6 +841,8 @@ mod tests {
             Some("secret-token".to_string()),
             None, // No rate limit
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for server to start
@@ -831,6 +945,8 @@ mod tests {
             None,    // No auth token
             Some(2), // Rate limit: 2 requests per second
             None,    // No health path
+            None,    // No HMAC secret
+            None,    // No HMAC header
         ));
 
         // Wait for server to start
@@ -908,6 +1024,8 @@ mod tests {
             None,
             None,
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Start source webhook handler (forwards to target)
@@ -928,6 +1046,8 @@ mod tests {
             None,
             None,
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Wait for servers to start
@@ -990,6 +1110,8 @@ mod tests {
             None,
             None,
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Start handler B (forwards to C)
@@ -1010,6 +1132,8 @@ mod tests {
             None,
             None,
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Start handler A (forwards to B)
@@ -1030,6 +1154,8 @@ mod tests {
             None,
             None,
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         sleep(Duration::from_millis(200)).await;
@@ -1093,6 +1219,8 @@ mod tests {
             None,
             None,
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Start target C
@@ -1113,6 +1241,8 @@ mod tests {
             None,
             None,
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         // Start source (forwards to both B and C)
@@ -1133,6 +1263,8 @@ mod tests {
             None,
             None,
             None, // No health path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         sleep(Duration::from_millis(200)).await;
@@ -1188,6 +1320,8 @@ mod tests {
             None,                             // No auth token
             None,                             // No rate limit
             Some("/health".to_string()),     // Health check path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         sleep(Duration::from_millis(100)).await;
@@ -1229,6 +1363,8 @@ mod tests {
             Some("secret-token".to_string()), // Auth required for webhook
             None,
             Some("/health".to_string()),     // Health check path
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         sleep(Duration::from_millis(100)).await;
@@ -1281,6 +1417,8 @@ mod tests {
             None,
             Some(1), // Very low rate limit: 1 request/sec
             Some("/health".to_string()),
+            None, // No HMAC secret
+            None, // No HMAC header
         ));
 
         sleep(Duration::from_millis(100)).await;
@@ -1304,6 +1442,325 @@ mod tests {
             assert_eq!(response.status(), 200);
             assert_eq!(response.text().await.unwrap(), "OK");
         }
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    // ============== HMAC Signature Tests ==============
+
+    #[test]
+    fn test_verify_hmac_signature_valid() {
+        let body = b"test body content";
+        let secret = "my-secret-key";
+
+        // Compute expected signature
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let expected = hex::encode(mac.finalize().into_bytes());
+        let signature = format!("sha256={}", expected);
+
+        assert!(verify_hmac_signature(body, secret, &signature));
+    }
+
+    #[test]
+    fn test_verify_hmac_signature_invalid() {
+        let body = b"test body content";
+        let secret = "my-secret-key";
+        let wrong_signature = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
+
+        assert!(!verify_hmac_signature(body, secret, wrong_signature));
+    }
+
+    #[test]
+    fn test_verify_hmac_signature_wrong_algorithm() {
+        let body = b"test body content";
+        let secret = "my-secret-key";
+        let signature = "sha1=abcdef1234567890";
+
+        assert!(!verify_hmac_signature(body, secret, &signature));
+    }
+
+    #[test]
+    fn test_verify_hmac_signature_malformed() {
+        let body = b"test body content";
+        let secret = "my-secret-key";
+
+        // Missing algorithm prefix
+        assert!(!verify_hmac_signature(body, secret, "abcdef1234567890"));
+    }
+
+    fn compute_hmac_sha256(body: &[u8], secret: &str) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+    }
+
+    #[tokio::test]
+    async fn test_webhook_hmac_valid_signature() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let secret = "test-hmac-secret";
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/webhook".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            None, // No auth token
+            None, // No rate limit
+            None, // No health path
+            Some(secret.to_string()),
+            None, // Default header
+        ));
+
+        sleep(Duration::from_millis(100)).await;
+
+        let body = r#"{"event": "test"}"#;
+        let signature = compute_hmac_sha256(body.as_bytes(), secret);
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/webhook", port))
+            .header("X-Hub-Signature-256", signature)
+            .body(body)
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "Webhook received");
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_hmac_invalid_signature() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/webhook".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            None,
+            None,
+            None,
+            Some("correct-secret".to_string()),
+            None,
+        ));
+
+        sleep(Duration::from_millis(100)).await;
+
+        let body = r#"{"event": "test"}"#;
+        // Sign with wrong secret
+        let wrong_signature = compute_hmac_sha256(body.as_bytes(), "wrong-secret");
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/webhook", port))
+            .header("X-Hub-Signature-256", wrong_signature)
+            .body(body)
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 401);
+        assert_eq!(response.text().await.unwrap(), "Invalid signature");
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_hmac_missing_signature() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/webhook".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            None,
+            None,
+            None,
+            Some("test-secret".to_string()),
+            None,
+        ));
+
+        sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/webhook", port))
+            .body(r#"{"event": "test"}"#)
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 401);
+        assert_eq!(response.text().await.unwrap(), "Missing signature");
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_hmac_with_auth_token() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let secret = "hmac-secret";
+        let auth_token = "auth-token-123";
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/webhook".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            Some(auth_token.to_string()),
+            None,
+            None,
+            Some(secret.to_string()),
+            None,
+        ));
+
+        sleep(Duration::from_millis(100)).await;
+
+        let body = r#"{"event": "test"}"#;
+        let signature = compute_hmac_sha256(body.as_bytes(), secret);
+
+        let client = reqwest::Client::new();
+
+        // Both HMAC and auth token provided - should succeed
+        let response = client
+            .post(format!("http://127.0.0.1:{}/webhook", port))
+            .header("X-Hub-Signature-256", &signature)
+            .header("X-Auth-Token", auth_token)
+            .body(body)
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 200);
+
+        // HMAC valid but auth token missing - should fail
+        let response = client
+            .post(format!("http://127.0.0.1:{}/webhook", port))
+            .header("X-Hub-Signature-256", &signature)
+            .body(body)
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 401);
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;
+    }
+
+    #[tokio::test]
+    async fn test_webhook_hmac_custom_header() {
+        let port = find_available_port().await;
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let (event_bus, event_rx) = create_test_deps();
+
+        let secret = "test-secret";
+        let custom_header = "X-Custom-Signature";
+
+        let handler = tokio::spawn(webhook_listener(
+            port,
+            "/webhook".to_string(),
+            "echo 'test'".to_string(),
+            "test-handler".to_string(),
+            30,
+            RetryConfig::default(),
+            ShellConfig::Simple("sh".to_string()),
+            None,
+            shutdown_rx,
+            event_bus,
+            event_rx,
+            Vec::new(),
+            None,
+            None,
+            None,
+            Some(secret.to_string()),
+            Some(custom_header.to_string()),
+        ));
+
+        sleep(Duration::from_millis(100)).await;
+
+        let body = r#"{"event": "test"}"#;
+        let signature = compute_hmac_sha256(body.as_bytes(), secret);
+
+        let client = reqwest::Client::new();
+
+        // Using custom header should work
+        let response = client
+            .post(format!("http://127.0.0.1:{}/webhook", port))
+            .header(custom_header, &signature)
+            .body(body)
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 200);
+
+        // Using default header should fail (missing signature)
+        let response = client
+            .post(format!("http://127.0.0.1:{}/webhook", port))
+            .header("X-Hub-Signature-256", &signature)
+            .body(body)
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert_eq!(response.status(), 401);
 
         let _ = shutdown_tx.send(());
         let _ = tokio::time::timeout(Duration::from_secs(2), handler).await;

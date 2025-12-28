@@ -171,6 +171,13 @@ pub struct Options {
     /// Health check path for webhook handlers (e.g., "/health")
     /// If set, requests to this path return 200 OK without auth or rate limiting
     pub health_path: Option<String>,
+    /// HMAC secret for webhook signature verification
+    /// If set, requests must include a valid HMAC signature in the specified header
+    pub hmac_secret: Option<String>,
+    /// Header name for HMAC signature (default: "X-Hub-Signature-256")
+    /// The header value should be in format "sha256=<hex-encoded-hmac>"
+    #[serde(default = "default_hmac_header")]
+    pub hmac_header: Option<String>,
     /// Debounce duration in milliseconds for filesystem events (default: 100ms)
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
@@ -186,6 +193,10 @@ pub struct Options {
 
 fn default_debounce_ms() -> u64 {
     100 // 100ms default debounce
+}
+
+fn default_hmac_header() -> Option<String> {
+    None // No default - only set if hmac_secret is provided
 }
 
 // Function to load and parse the YAML configuration file

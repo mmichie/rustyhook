@@ -284,6 +284,8 @@ fn initialize_webhook_handler(
         let auth_token = handler_config.options.auth_token.clone();
         let rate_limit = handler_config.options.rate_limit;
         let health_path = handler_config.options.health_path.clone();
+        let hmac_secret = handler_config.options.hmac_secret.clone();
+        let hmac_header = handler_config.options.hmac_header.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         let webhook_future = tokio::spawn(async move {
             webhook_handler::webhook_listener(
@@ -302,6 +304,8 @@ fn initialize_webhook_handler(
                 auth_token,
                 rate_limit,
                 health_path,
+                hmac_secret,
+                hmac_header,
             )
             .await
             .unwrap_or_else(|e| {
