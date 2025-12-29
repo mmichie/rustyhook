@@ -10,7 +10,7 @@ Trigr is an all-in-one automation tool that can:
 - **Execute cron jobs** on schedules
 - **Poll AWS SQS queues** for messages
 
-When any of these events occur, RustyHook executes your configured shell commands.
+When any of these events occur, Trigr executes your configured shell commands.
 
 ## Features
 
