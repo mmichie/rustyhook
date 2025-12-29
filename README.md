@@ -1,10 +1,10 @@
-# RustyHook
+# Trigr
 
 A lightweight, event-driven automation framework that monitors multiple event sources and executes shell commands in response. Written in Rust for performance and reliability.
 
-## What is RustyHook?
+## What is Trigr?
 
-RustyHook is an all-in-one automation tool that can:
+Trigr is an all-in-one automation tool that can:
 - **Monitor filesystems** for changes (with include/exclude patterns)
 - **Listen for webhooks** via HTTP endpoints (with auth and rate limiting)
 - **Execute cron jobs** on schedules
@@ -28,25 +28,31 @@ When any of these events occur, RustyHook executes your configured shell command
 
 ### From Releases
 
-Download pre-built binaries from [GitHub Releases](https://github.com/mmichie/rustyhook/releases):
+Download pre-built binaries from [GitHub Releases](https://github.com/mmichie/trigr/releases):
 
 ```bash
 # Linux (x86_64)
-curl -LO https://github.com/mmichie/rustyhook/releases/latest/download/rustyhook-x86_64-unknown-linux-gnu.tar.gz
-tar xzf rustyhook-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/mmichie/trigr/releases/latest/download/trigr-x86_64-unknown-linux-gnu.tar.gz
+tar xzf trigr-x86_64-unknown-linux-gnu.tar.gz
 
 # macOS (Apple Silicon)
-curl -LO https://github.com/mmichie/rustyhook/releases/latest/download/rustyhook-aarch64-apple-darwin.tar.gz
-tar xzf rustyhook-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/mmichie/trigr/releases/latest/download/trigr-aarch64-apple-darwin.tar.gz
+tar xzf trigr-aarch64-apple-darwin.tar.gz
+```
+
+### From crates.io
+
+```bash
+cargo install trigr
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/mmichie/rustyhook.git
-cd rustyhook
+git clone https://github.com/mmichie/trigr.git
+cd trigr
 cargo build --release
-./target/release/rustyhook -c your-config.yml
+./target/release/trigr -c your-config.yml
 ```
 
 ## Quick Start
@@ -99,10 +105,10 @@ handlers:
     shell: "python process_message.py"
 ```
 
-Run RustyHook:
+Run Trigr:
 
 ```bash
-rustyhook -c config.yml
+trigr -c config.yml
 ```
 
 ## Configuration Reference
@@ -156,7 +162,7 @@ rustyhook -c config.yml
 | `queue_url` | string | required | Full SQS queue URL |
 | `poll_interval` | integer | required | Seconds between polls |
 
-## Why RustyHook?
+## Why Trigr?
 
 ### The Problem
 
@@ -170,7 +176,7 @@ This leads to fragmented automation infrastructure with different tools, configu
 
 ### The Solution
 
-RustyHook unifies these event sources into a single, lightweight binary with:
+Trigr unifies these event sources into a single, lightweight binary with:
 - **Simple YAML configuration** - One config file for all your automation
 - **Parallel execution** - All handlers run independently
 - **Minimal dependencies** - Single binary deployment
@@ -180,7 +186,7 @@ RustyHook unifies these event sources into a single, lightweight binary with:
 
 | Tool | Event Types | Deployment | Best For |
 |------|------------|------------|----------|
-| **RustyHook** | Files, Webhooks, Cron, SQS | Single binary | Unified local automation |
+| **Trigr** | Files, Webhooks, Cron, SQS | Single binary | Unified local automation |
 | Argo Events | 20+ sources | Kubernetes required | K8s environments |
 | Ansible Event-Driven | Multiple | Enterprise platform | Large infrastructure |
 | Watchman | Files only | Daemon + client | File watching |

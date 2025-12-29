@@ -1,11 +1,11 @@
 [package]
-name = "rustyhook"
-version = "0.2.1"
+name = "trigr"
+version = "0.3.0"
 edition = "2021"
 description = "Event-driven automation framework for webhooks, filesystems, cron, and SQS"
 license = "MIT"
-repository = "https://github.com/mmichie/rustyhook"
-homepage = "https://github.com/mmichie/rustyhook"
+repository = "https://github.com/mmichie/trigr"
+homepage = "https://github.com/mmichie/trigr"
 keywords = ["webhook", "automation", "cron", "filesystem", "sqs"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"

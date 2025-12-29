@@ -34,7 +34,7 @@ cargo test
 
 ## Architecture Overview
 
-Rustyhook is an event-driven automation framework that monitors various event sources and executes shell commands in response. The application uses an asynchronous architecture built on Tokio.
+Trigr is an event-driven automation framework that monitors various event sources and executes shell commands in response. The application uses an asynchronous architecture built on Tokio.
 
 ### Core Components
 
@@ -44,7 +44,7 @@ Rustyhook is an event-driven automation framework that monitors various event so
 4. **Event Handlers** (`src/handlers/`):
    - `cron_handler.rs`: Executes commands on cron schedules using `chrono` and `cron` crate
    - `filesystem_handler.rs`: Monitors file system changes using `notify` crate with kqueue backend on macOS
-   - `sqs_handler.rs`: Polls AWS SQS queues for messages using `rusoto_sqs`
+   - `sqs_handler.rs`: Polls AWS SQS queues for messages using `aws-sdk-sqs`
    - `webhook_handler.rs`: HTTP server listening for webhook requests using `hyper`
 
 ### Concurrency and Shutdown Model
