@@ -2,8 +2,13 @@
 name = "rustyhook"
 version = "0.2.1"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Event-driven automation framework for webhooks, filesystems, cron, and SQS"
+license = "MIT"
+repository = "https://github.com/mmichie/rustyhook"
+homepage = "https://github.com/mmichie/rustyhook"
+keywords = ["webhook", "automation", "cron", "filesystem", "sqs"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [dependencies]
 clap = "4.5.40"
