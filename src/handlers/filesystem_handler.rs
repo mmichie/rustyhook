@@ -206,14 +206,14 @@ pub async fn filesystem_watcher(
                         let path_str = paths.first().cloned().unwrap_or_default();
                         let event_kind = event_kinds.first().copied().unwrap_or("other");
 
-                        let rustyhook_event = Event::from_filesystem(
+                        let trigr_event = Event::from_filesystem(
                             &handler_name,
                             &path_str,
                             event_kind,
                         );
 
                         for target in &forward_to {
-                            if let Err(e) = event_bus.send(target, rustyhook_event.clone()) {
+                            if let Err(e) = event_bus.send(target, trigr_event.clone()) {
                                 warn!("Failed to forward event to '{}': {}", target, e);
                             } else {
                                 debug!("Forwarded event to '{}'", target);
@@ -477,7 +477,7 @@ mod tests {
             &exclude
         ));
         assert!(!should_process_path(
-            Path::new("target/debug/rustyhook"),
+            Path::new("target/debug/trigr"),
             &include,
             &exclude
         ));

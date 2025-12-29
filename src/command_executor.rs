@@ -293,7 +293,7 @@ mod tests {
 
         // Create a unique temporary file to track attempts using PID and timestamp
         let tmp_file = format!(
-            "/tmp/rustyhook_test_{}_{}",
+            "/tmp/trigr_test_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
